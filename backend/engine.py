@@ -479,6 +479,48 @@ def portfolio_exists(name: str = "default") -> bool:
         conn.close()
 
 
+def export_all(name: str = "default") -> dict:
+    """
+    One complete, self-contained snapshot of everything: live portfolio +
+    results summary, every trade, the full decision/reasoning log, the equity
+    curve, all hourly reports, and the current strategy settings. Returned as a
+    plain dict ready to serialize to a downloadable JSON file.
+    """
+    summary = compute_summary(name, refresh=True)
+    trades = get_trades(name, 100000)
+    # add realized P&L per SELL row for convenience in analysis
+    for t in trades:
+        if t["action"] == "SELL" and t.get("entry_avg") is not None:
+            t["realized_pnl"] = round((t["price"] - t["entry_avg"]) * t["shares"], 4)
+    return {
+        "export_version": 1,
+        "app": "TradeBOT — Polymarket paper trading",
+        "exported_at": _now(),
+        "portfolio_name": name,
+        "results": {
+            "starting_balance": summary["portfolio"]["starting_balance"],
+            "total_value": summary["portfolio"]["total_value"],
+            "cash_balance": summary["portfolio"]["cash_balance"],
+            "positions_value": summary["portfolio"]["positions_value"],
+            "total_pnl": round(summary["realized_pnl"] + summary["unrealized_pnl"], 2),
+            "realized_pnl": summary["realized_pnl"],
+            "unrealized_pnl": summary["unrealized_pnl"],
+            "pnl_pct": summary["portfolio"]["pnl_pct"],
+            "drawdown_pct": summary["portfolio"]["drawdown_pct"],
+            "win_rate": summary["win_rate"],
+            "closed_trades": summary["closed_trades"],
+            "total_trades": summary["total_trades"],
+        },
+        "agent_state": summary["agent"],
+        "settings": get_settings(name),
+        "open_positions": summary["portfolio"]["positions"],
+        "trades": trades,
+        "decisions": get_decisions(name, 100000),
+        "equity_curve": get_equity_curve(name, 100000),
+        "hourly_reports": get_hourly_reports(name, 100000),
+    }
+
+
 def reset_all(name: str = "default", balance: float | None = None,
               keep_running: bool = True) -> dict:
     """

@@ -123,6 +123,18 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/reports":
                 limit = int(qs.get("limit", ["168"])[0])
                 return self._send_json(engine.get_hourly_reports(PORTFOLIO, limit))
+            if path == "/api/export":
+                data = engine.export_all(PORTFOLIO)
+                stamp = data["exported_at"][:19].replace(":", "").replace("-", "")
+                fname = f"tradebot-export-{stamp}.json"
+                body = json.dumps(data, default=str, indent=2).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             return self._serve_static(path)
         except Exception as exc:
             return self._send_json({"error": str(exc)}, status=500)

@@ -105,6 +105,8 @@ naive mid-price. See `backend/paper_engine_core.py::_simulate_fill`.
 | Port | `PORT` env (default 8765 local) |
 | **Private access** | Set `TRADEBOT_AUTH_PASSWORD` (+ optional `TRADEBOT_AUTH_USER`, default `admin`). Whole site then needs HTTP Basic login. Unset = open (local). |
 | **Hourly reports** | Auto-saved every hour → Dashboard **Hourly Log** tab, `GET /api/reports`, **and** stdout/`fly logs` (`[HOURLY ...]` lines). Tune cadence with `TRADEBOT_REPORT_INTERVAL_SEC`. |
+| **Export everything** | History panel → **Export all** downloads one JSON (`GET /api/export`) with results, every trade, the full reasoning log, equity curve, hourly reports and settings. **CSV** exports the visible tab as a spreadsheet. |
+| **Times** | All timestamps render in the viewer's **local timezone** (the top-bar clock shows it); stored values are UTC. |
 
 ### Make the deployed dashboard private (Fly)
 

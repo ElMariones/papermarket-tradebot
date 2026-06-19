@@ -10,7 +10,18 @@ const money = (n) => (n < 0 ? "-$" : "$") + Math.abs(n).toFixed(2);
 const signed = (n) => (n >= 0 ? "+" : "-") + "$" + Math.abs(n).toFixed(2);
 const cls = (n) => (n > 0 ? "pos" : n < 0 ? "neg" : "muted");
 const esc = (s) => (s || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
-const ts = (s) => (s ? s.slice(0, 19).replace("T", " ") : "—");
+// Timestamps from the API are UTC ISO strings; render them in the viewer's
+// LOCAL timezone (e.g. Madrid shows 17:30, not the 15:30 UTC value).
+const ts = (s) => {
+  if (!s) return "—";
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return s;
+  return d.toLocaleString([], {
+    month: "short", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  });
+};
+const clockFmt = (d) => d.toLocaleTimeString([], { hour12: false });
 
 // ---- SETTINGS metadata (labels + step) ----
 const SETTING_FIELDS = [
@@ -34,6 +45,7 @@ const CAP_MIN = { max_concurrent_positions: 1, markets_per_scan: 10 };
 
 let equityData = [];
 let SETTINGS = {};
+let activeTab = "trades";
 
 async function refresh() {
   try {
@@ -41,8 +53,18 @@ async function refresh() {
     renderHeadline(s);
     renderAgent(s.agent);
     renderPositions(s.portfolio.positions);
-    $("lastUpdate").textContent = "Updated " + new Date().toLocaleTimeString();
+    $("lastUpdate").textContent = "Updated " + clockFmt(new Date()) +
+      (s.agent.cycles ? " · " + s.agent.cycles + " cycles" : "");
   } catch (e) { /* transient */ }
+}
+
+// Live local-time clock in the top bar.
+function tickClock() {
+  $("localClock").textContent = clockFmt(new Date());
+  try {
+    const z = Intl.DateTimeFormat().resolvedOptions().timeZone || "local";
+    $("clockZone").textContent = z.split("/").pop().replace(/_/g, " ");
+  } catch (e) { $("clockZone").textContent = "local"; }
 }
 
 function renderHeadline(s) {
@@ -59,8 +81,14 @@ function renderHeadline(s) {
   $("tradeCount").textContent = `${s.closed_trades} closed / ${s.total_trades} trades`;
   const maxPos = SETTINGS.max_concurrent_positions || pf.num_open_positions;
   $("openPos").textContent = `${pf.num_open_positions} / ${maxPos}`;
-  $("drawdown").textContent = `DD ${pf.drawdown_pct.toFixed(1)}% · start ${money(pf.starting_balance)}`;
+  $("drawdown").textContent = `DD ${pf.drawdown_pct.toFixed(1)}% · base ${money(pf.starting_balance)}`;
   $("posCount").textContent = pf.num_open_positions + " open";
+  // exposure: share of equity deployed into positions
+  const tv = pf.total_value || 1;
+  const pct = Math.max(0, Math.min(100, pf.positions_value / tv * 100));
+  $("expBar").style.width = pct.toFixed(1) + "%";
+  $("expLabel").textContent =
+    `${pct.toFixed(0)}% deployed · ${money(pf.positions_value)} in ${pf.num_open_positions}`;
 }
 function setVal(id, n, signedFmt) {
   const el = $(id);
@@ -70,9 +98,10 @@ function setVal(id, n, signedFmt) {
 
 function renderAgent(a) {
   const pill = $("agentStatus");
-  pill.textContent = "● " + a.status;
+  pill.textContent = a.status;
   pill.className = "status-pill status-" + a.status;
-  $("agentMeta").textContent = a.cycles ? `${a.cycles} cycles · ${a.last_message || ""}` : "";
+  pill.title = (a.cycles ? a.cycles + " cycles" : "idle") +
+    (a.last_message ? " · " + a.last_message : "");
 }
 
 function renderPositions(positions) {
@@ -114,7 +143,7 @@ async function loadTrades() {
       : `<td class="num">${money(r.total_cost)}</td>`;
     return `
     <tr>
-      <td>${ts(r.executed_at)}</td>
+      <td class="t-time">${ts(r.executed_at)}</td>
       <td><span class="badge ${r.action}">${r.action}</span></td>
       <td><span class="badge ${r.side}">${r.side}</span></td>
       <td class="mkt" title="${esc(r.market_question)}">${esc(r.market_question)}</td>
@@ -132,7 +161,7 @@ async function loadDecisions() {
   if (!d.length) { tb.innerHTML = `<tr><td colspan="6" class="empty">No decisions logged.</td></tr>`; return; }
   tb.innerHTML = d.map((r) => `
     <tr>
-      <td>${ts(r.ts)}</td>
+      <td class="t-time">${ts(r.ts)}</td>
       <td><span class="badge ${r.signal}">${r.signal}</span></td>
       <td>${r.acted ? "✓" : "—"}</td>
       <td class="num">${r.confidence != null ? r.confidence.toFixed(2) : "—"}</td>
@@ -150,7 +179,7 @@ async function loadReports() {
   }
   tb.innerHTML = d.map((r) => `
     <tr>
-      <td>${ts(r.ts)}</td>
+      <td class="t-time">${ts(r.ts)}</td>
       <td class="num">${money(r.total_value)}</td>
       <td class="num ${cls(r.pnl_pct)}">${r.pnl_pct.toFixed(2)}%</td>
       <td class="num ${cls(r.realized_pnl)}">${signed(r.realized_pnl)}</td>
@@ -168,15 +197,15 @@ async function loadEquity() {
 }
 function drawEquity() {
   const cv = $("equityChart"); const dpr = window.devicePixelRatio || 1;
-  const W = cv.clientWidth, H = 220;
+  const W = cv.clientWidth, H = 232;
   cv.width = W * dpr; cv.height = H * dpr;
   const ctx = cv.getContext("2d"); ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, W, H);
   const pad = { l: 56, r: 12, t: 12, b: 22 };
   const data = equityData;
   if (data.length < 2) {
-    ctx.fillStyle = "#56657a"; ctx.font = "12px monospace";
-    ctx.fillText("Collecting equity data… run a few agent cycles.", pad.l, H / 2);
+    ctx.fillStyle = "#5a6776"; ctx.font = "12px monospace";
+    ctx.fillText("Collecting equity data — run a few agent cycles.", pad.l, H / 2);
     return;
   }
   const vals = data.map((d) => d.total_value);
@@ -187,25 +216,25 @@ function drawEquity() {
   const start = data[0].total_value;
 
   // grid + y labels
-  ctx.strokeStyle = "#1e2836"; ctx.fillStyle = "#56657a"; ctx.font = "10px monospace";
+  ctx.strokeStyle = "#1a212a"; ctx.fillStyle = "#5a6776"; ctx.font = "10px monospace";
   ctx.textAlign = "right";
   for (let g = 0; g <= 4; g++) {
     const v = min + (g / 4) * (max - min); const yy = y(v);
     ctx.beginPath(); ctx.moveTo(pad.l, yy); ctx.lineTo(W - pad.r, yy); ctx.stroke();
     ctx.fillText("$" + v.toFixed(0), pad.l - 6, yy + 3);
   }
-  // baseline (starting value)
+  // baseline (starting / deposited basis) in amber
   if (start >= min && start <= max) {
-    ctx.strokeStyle = "#3a4658"; ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = "#e3a838"; ctx.globalAlpha = .55; ctx.setLineDash([4, 4]);
     ctx.beginPath(); ctx.moveTo(pad.l, y(start)); ctx.lineTo(W - pad.r, y(start)); ctx.stroke();
-    ctx.setLineDash([]);
+    ctx.setLineDash([]); ctx.globalAlpha = 1;
   }
   const last = vals[vals.length - 1];
   const up = last >= start;
-  const color = up ? "#1ec27a" : "#ff5470";
+  const color = up ? "#27c08a" : "#f0506a";
   // area fill
   const grad = ctx.createLinearGradient(0, pad.t, 0, H - pad.b);
-  grad.addColorStop(0, up ? "rgba(30,194,122,.25)" : "rgba(255,84,112,.25)");
+  grad.addColorStop(0, up ? "rgba(39,192,138,.22)" : "rgba(240,80,106,.20)");
   grad.addColorStop(1, "rgba(0,0,0,0)");
   ctx.beginPath(); ctx.moveTo(x(0), y(vals[0]));
   data.forEach((d, i) => ctx.lineTo(x(i), y(d.total_value)));
@@ -272,7 +301,7 @@ $("btnStop").onclick = ctl("/api/agent/stop");
 $("btnCycle").onclick = async () => {
   $("btnCycle").textContent = "running…";
   await api("/api/agent/cycle", "POST");
-  $("btnCycle").textContent = "Cycle ▸";
+  $("btnCycle").textContent = "Cycle";
   refresh(); loadTrades(); loadDecisions(); loadEquity();
 };
 
@@ -296,11 +325,11 @@ $("btnReset").onclick = async () => {
   try {
     const r = await api("/api/reset", "POST", { confirm: true, balance: bal });
     const m = $("resetMsg");
-    if (r.error) { m.textContent = "✗ " + r.error; m.style.color = "var(--red)"; }
-    else { m.textContent = `✓ Reset to $${bal.toFixed(0)}.`; m.style.color = "var(--green)"; }
+    if (r.error) { m.textContent = "✗ " + r.error; m.style.color = "var(--down)"; }
+    else { m.textContent = `✓ Reset to $${bal.toFixed(0)}.`; m.style.color = "var(--up)"; }
     setTimeout(() => (m.textContent = ""), 4000);
   } finally {
-    b.textContent = "Reset Everything"; b.disabled = false;
+    b.textContent = "Reset all"; b.disabled = false;
     refresh(); loadSettings(); loadTrades(); loadDecisions(); loadEquity(); loadReports();
   }
 };
@@ -311,13 +340,60 @@ document.querySelectorAll(".tab").forEach((t) =>
   t.onclick = () => {
     document.querySelectorAll(".tab").forEach((x) => x.classList.remove("active"));
     t.classList.add("active");
+    activeTab = t.dataset.tab;
     Object.entries(PANES).forEach(([k, id]) => $(id).classList.toggle("hidden", t.dataset.tab !== k));
     if (t.dataset.tab === "reports") loadReports();
   });
 
+// ---- EXPORT ----
+// Full snapshot: navigating to the endpoint triggers a file download (the
+// server sets Content-Disposition). The browser reuses the session's auth.
+$("btnExport").onclick = () => { window.location.href = "/api/export"; };
+
+// CSV of whatever tab is showing — fetched fresh, built client-side.
+function toCsv(rows, cols) {
+  const esc = (v) => {
+    const s = v == null ? "" : String(v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const head = cols.map((c) => c[0]).join(",");
+  const body = rows.map((r) => cols.map((c) => esc(c[1](r))).join(",")).join("\n");
+  return head + "\n" + body;
+}
+function download(name, text, type) {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+const CSV_SPECS = {
+  trades: ["trades?limit=100000", [
+    ["time_utc", (r) => r.executed_at], ["action", (r) => r.action], ["side", (r) => r.side],
+    ["market", (r) => r.market_question], ["shares", (r) => r.shares], ["price", (r) => r.price],
+    ["cost_or_proceeds", (r) => r.total_cost], ["entry_avg", (r) => r.entry_avg],
+    ["realized_pnl", (r) => (r.action === "SELL" && r.entry_avg != null ? ((r.price - r.entry_avg) * r.shares).toFixed(4) : "")],
+    ["rationale", (r) => r.reasoning]]],
+  decisions: ["decisions?limit=100000", [
+    ["time_utc", (r) => r.ts], ["signal", (r) => r.signal], ["acted", (r) => r.acted],
+    ["confidence", (r) => r.confidence], ["market", (r) => r.market_question], ["reasoning", (r) => r.reasoning]]],
+  reports: ["reports?limit=100000", [
+    ["time_utc", (r) => r.ts], ["total_value", (r) => r.total_value], ["pnl_pct", (r) => r.pnl_pct],
+    ["realized_pnl", (r) => r.realized_pnl], ["unrealized_pnl", (r) => r.unrealized_pnl],
+    ["positions", (r) => r.num_positions], ["win_rate", (r) => r.win_rate],
+    ["trades_last_hour", (r) => r.trades_last_hour]]],
+};
+$("btnExportCsv").onclick = async () => {
+  const spec = CSV_SPECS[activeTab]; if (!spec) return;
+  const rows = await api("/api/" + spec[0]);
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T-]/g, "");
+  download(`tradebot-${activeTab}-${stamp}.csv`, toCsv(rows, spec[1]), "text/csv");
+};
+
 // ---- INIT + POLL ----
 function tickSlow() { loadTrades(); loadDecisions(); loadEquity(); loadReports(); }
-refresh(); loadSettings(); tickSlow();
+tickClock(); refresh(); loadSettings(); tickSlow();
+setInterval(tickClock, 1000);
 setInterval(refresh, 4000);
 setInterval(tickSlow, 8000);
 window.addEventListener("resize", drawEquity);
