@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "polymarket-paper-trader": {
+      "source": "mjunaidca/polymarket-skills",
+      "sourceType": "github",
+      "skillPath": "polymarket-paper-trader/SKILL.md",
+      "computedHash": "c7bd51c92d80a6933a0f21f29d4fa0fccde1c7067471f30949d20b304ee56e1d"
+    }
+  }
+}

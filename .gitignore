@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Local databases (dev scratch — production DB lives on the Fly volume)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Env / secrets
+.env
+.env.local
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Logs
+*.log
+
+# Node (not used today, here in case the frontend grows a build step)
+node_modules/
+
+# Local Claude Code tooling / skill source (the engine is vendored into
+# backend/paper_engine_core.py, so the app does not need this at runtime).
+.claude/

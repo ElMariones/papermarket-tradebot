@@ -1,0 +1,5 @@
+# TradeBOT runtime dependencies.
+# The app is deliberately near-stdlib: the web server uses http.server and the
+# DB uses sqlite3, both from the standard library. The only third-party need is
+# certifi, to give Python a CA bundle for HTTPS to Polymarket on macOS/slim images.
+certifi>=2023.7.22

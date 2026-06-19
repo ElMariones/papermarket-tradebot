@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TradeBOT · Polymarket Paper Terminal</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">◆</span>
+    <div>
+      <div class="brand-name">TradeBOT</div>
+      <div class="brand-sub">Polymarket Paper Terminal · <span class="paper-tag">PAPER · NO REAL FUNDS</span></div>
+    </div>
+  </div>
+  <div class="agent-controls">
+    <span id="agentStatus" class="status-pill status-stopped">● stopped</span>
+    <span id="agentMeta" class="agent-meta"></span>
+    <button id="btnStart" class="btn btn-go">Start</button>
+    <button id="btnPause" class="btn">Pause</button>
+    <button id="btnStop" class="btn btn-stop">Stop</button>
+    <button id="btnCycle" class="btn btn-ghost" title="Run one cycle now">Cycle ▸</button>
+  </div>
+</header>
+
+<main>
+  <!-- HEADLINE -->
+  <section class="cards">
+    <div class="card hero">
+      <div class="card-label">Total Value</div>
+      <div id="totalValue" class="card-value big">—</div>
+      <div id="totalPnl" class="card-delta">—</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Realized P&L</div>
+      <div id="realizedPnl" class="card-value">—</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Unrealized P&L</div>
+      <div id="unrealizedPnl" class="card-value">—</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Cash</div>
+      <div id="cash" class="card-value">—</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Win Rate</div>
+      <div id="winRate" class="card-value">—</div>
+      <div id="tradeCount" class="card-delta muted">—</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Open / Max</div>
+      <div id="openPos" class="card-value">—</div>
+      <div id="drawdown" class="card-delta muted">—</div>
+    </div>
+  </section>
+
+  <div class="grid">
+    <!-- LEFT: chart + positions + history -->
+    <div class="col-main">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Equity Curve</h2>
+          <span id="equityRange" class="panel-sub"></span>
+        </div>
+        <canvas id="equityChart" height="220"></canvas>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><h2>Open Positions</h2><span id="posCount" class="panel-sub"></span></div>
+        <div class="table-wrap">
+          <table id="posTable">
+            <thead><tr>
+              <th>Market</th><th>Side</th><th class="num">Shares</th>
+              <th class="num">Entry</th><th class="num">Mark</th>
+              <th class="num">Value</th><th class="num">P&L</th><th></th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head tabs">
+          <button class="tab active" data-tab="trades">Trade History</button>
+          <button class="tab" data-tab="decisions">Reasoning Log</button>
+        </div>
+        <div class="table-wrap" id="tradesPane">
+          <table id="tradesTable">
+            <thead><tr>
+              <th>Time</th><th>Action</th><th>Side</th><th>Market</th>
+              <th class="num">Shares</th><th class="num">Price</th>
+              <th class="num">Cost/Proceeds</th><th>Reason</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="table-wrap hidden" id="decisionsPane">
+          <table id="decisionsTable">
+            <thead><tr>
+              <th>Time</th><th>Signal</th><th>Acted</th><th>Conf</th>
+              <th>Market</th><th>Reasoning</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <!-- RIGHT: controls -->
+    <div class="col-side">
+      <section class="panel">
+        <div class="panel-head"><h2>Add Paper Funds</h2></div>
+        <div class="fund-row">
+          <input id="fundAmount" type="number" min="1" step="1" value="100" />
+          <button id="btnFund" class="btn btn-go">Deposit</button>
+        </div>
+        <div class="quick-funds">
+          <button class="chip" data-amt="50">+$50</button>
+          <button class="chip" data-amt="100">+$100</button>
+          <button class="chip" data-amt="500">+$500</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><h2>Strategy Parameters</h2></div>
+        <form id="settingsForm" class="settings"></form>
+        <button id="btnSaveSettings" class="btn btn-go full">Save Parameters</button>
+        <div id="settingsMsg" class="settings-msg"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><h2>Strategy</h2></div>
+        <p class="strat-desc">
+          <strong>Favorite-longshot bias.</strong> Longshots are overpriced and
+          clear favorites underpriced. The agent buys YES on favorites in the
+          configured band and fades extreme longshots by buying NO — only after
+          passing volume, book-depth and spread gates. Exits on take-profit,
+          stop-loss, or market resolution.
+        </p>
+      </section>
+    </div>
+  </div>
+</main>
+
+<footer class="footer">
+  <span id="lastUpdate">—</span> ·
+  All prices live from Polymarket CLOB/Gamma · All execution simulated ·
+  Data: <code>~/.polymarket-paper/portfolio.db</code>
+</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>
