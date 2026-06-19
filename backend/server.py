@@ -11,6 +11,8 @@ start/pause/stop buttons drive it.
 
 from __future__ import annotations
 
+import base64
+import hmac
 import json
 import os
 import threading
@@ -20,6 +22,12 @@ from urllib.parse import urlparse, parse_qs
 
 import agent
 import engine
+
+# --- access control -------------------------------------------------------
+# If TRADEBOT_AUTH_PASSWORD is set, the whole site (API + dashboard) requires
+# HTTP Basic Auth. Unset => open (local dev). Set it as a Fly secret in prod.
+AUTH_USER = os.environ.get("TRADEBOT_AUTH_USER", "admin")
+AUTH_PASSWORD = os.environ.get("TRADEBOT_AUTH_PASSWORD", "")
 
 FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend"
 PORT = int(os.environ.get("PORT", "8765"))          # Fly injects PORT
@@ -64,8 +72,34 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):  # quiet the default noisy logging
         pass
 
+    # --- auth ------------------------------------------------------------
+    def _authed(self) -> bool:
+        if not AUTH_PASSWORD:
+            return True  # auth disabled (local dev)
+        hdr = self.headers.get("Authorization", "")
+        if not hdr.startswith("Basic "):
+            return False
+        try:
+            user, _, pw = base64.b64decode(hdr[6:]).decode().partition(":")
+        except Exception:
+            return False
+        return (hmac.compare_digest(user, AUTH_USER)
+                and hmac.compare_digest(pw, AUTH_PASSWORD))
+
+    def _require_auth(self) -> bool:
+        if self._authed():
+            return True
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="TradeBOT"')
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Authentication required.")
+        return False
+
     # --- routing ---------------------------------------------------------
     def do_GET(self):
+        if not self._require_auth():
+            return
         parsed = urlparse(self.path)
         path = parsed.path
         qs = parse_qs(parsed.query)
@@ -85,12 +119,17 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/agent":
                 return self._send_json(engine.get_agent_state(PORTFOLIO))
             if path == "/api/summary":
-                return self._send_json(self._summary())
+                return self._send_json(engine.compute_summary(PORTFOLIO))
+            if path == "/api/reports":
+                limit = int(qs.get("limit", ["168"])[0])
+                return self._send_json(engine.get_hourly_reports(PORTFOLIO, limit))
             return self._serve_static(path)
         except Exception as exc:
             return self._send_json({"error": str(exc)}, status=500)
 
     def do_POST(self):
+        if not self._require_auth():
+            return
         path = urlparse(self.path).path
         body = self._read_json()
         try:
@@ -113,29 +152,11 @@ class Handler(BaseHTTPRequestHandler):
                 token = body.get("token_id"); side = body.get("side")
                 return self._send_json(engine.close_position(
                     token, side, PORTFOLIO, reasoning="Manual close from dashboard."))
+            if path == "/api/report":
+                return self._send_json(engine.record_hourly_report(PORTFOLIO))
             return self._send_json({"error": "not found"}, status=404)
         except Exception as exc:
             return self._send_json({"error": str(exc)}, status=400)
-
-    # --- composite summary for the dashboard headline --------------------
-    def _summary(self):
-        pf = engine.get_portfolio(PORTFOLIO, refresh_prices=True)
-        state = engine.get_agent_state(PORTFOLIO)
-        trades = engine.get_trades(PORTFOLIO, 1000)
-        sells = [t for t in trades if t["action"] == "SELL" and t.get("entry_avg")]
-        realized = sum((t["price"] - t["entry_avg"]) * t["shares"] for t in sells)
-        wins = sum(1 for t in sells if (t["price"] - t["entry_avg"]) > 0)
-        win_rate = (wins / len(sells) * 100) if sells else 0.0
-        unrealized = sum(p["unrealized_pnl"] for p in pf["positions"])
-        return {
-            "portfolio": pf,
-            "agent": state,
-            "realized_pnl": round(realized, 2),
-            "unrealized_pnl": round(unrealized, 2),
-            "closed_trades": len(sells),
-            "total_trades": len(trades),
-            "win_rate": round(win_rate, 1),
-        }
 
     # --- static files ----------------------------------------------------
     def _serve_static(self, path):

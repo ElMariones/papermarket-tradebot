@@ -14,6 +14,7 @@ start/stop/pause it. All execution is SIMULATED against REAL live prices.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 import traceback
@@ -188,12 +189,33 @@ def stop(name: str = "default") -> dict:
     return engine.set_agent_status(name, "stopped", message="agent stopped")
 
 
+HOURLY_REPORT_SEC = int(os.environ.get("TRADEBOT_REPORT_INTERVAL_SEC", "3600"))
+
+
+def _emit_hourly_report(name: str):
+    """Persist + print an hourly report (stdout shows up in `fly logs`)."""
+    try:
+        r = engine.record_hourly_report(name)
+        print(
+            f"[HOURLY {r['ts'][:19]}] total=${r['total_value']:.2f} "
+            f"({r['pnl_pct']:+.2f}%) cash=${r['cash_balance']:.2f} "
+            f"pos={r['num_positions']} realized=${r['realized_pnl']:+.2f} "
+            f"unrealized=${r['unrealized_pnl']:+.2f} winrate={r['win_rate']:.0f}% "
+            f"trades_1h={r['trades_last_hour']} decisions_1h={r['decisions_last_hour']}",
+            flush=True)
+    except Exception as exc:
+        print(f"[HOURLY] report failed: {exc}", flush=True)
+
+
 def run_forever(name: str = "default", stop_event: threading.Event | None = None):
     """
     Long-lived runner: execute cycles while control state is 'running',
     idle while 'paused', exit-loop check honored each tick. Used by both the
     standalone worker process and the local in-process worker thread.
+    Emits a persisted performance report every HOURLY_REPORT_SEC.
     """
+    last_report = time.monotonic()
+    _emit_hourly_report(name)  # baseline at startup
     while stop_event is None or not stop_event.is_set():
         st = engine.get_agent_state(name)
         if st["status"] == "running":
@@ -206,6 +228,9 @@ def run_forever(name: str = "default", stop_event: threading.Event | None = None
             interval = int(engine.get_settings(name)["scan_interval_sec"])
         else:
             interval = 2  # paused/stopped: poll the control flag cheaply
+        if time.monotonic() - last_report >= HOURLY_REPORT_SEC:
+            _emit_hourly_report(name)
+            last_report = time.monotonic()
         # sleep in 1s slices so control changes are picked up quickly
         for _ in range(max(1, interval)):
             if stop_event is not None and stop_event.is_set():

@@ -92,6 +92,7 @@ tbody tr:hover{background:#0e1620}
   border:1px solid var(--red);border-radius:4px;cursor:pointer}
 .empty{padding:24px;text-align:center;color:var(--dim)}
 .hidden{display:none}
+.pnl-tag{font-size:10px;opacity:.85;margin-left:2px}
 
 /* FUNDS */
 .fund-row{display:flex;gap:8px;padding:14px 16px}
@@ -112,6 +113,26 @@ tbody tr:hover{background:#0e1620}
 .settings-msg{padding:0 16px 12px;font-size:11px;color:var(--green);font-family:var(--mono);min-height:14px}
 .strat-desc{padding:14px 16px;color:var(--muted);font-size:12px;line-height:1.6}
 .strat-desc strong{color:var(--txt)}
+
+/* HELP TOOLTIPS */
+.help{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;
+  margin-left:5px;border-radius:50%;border:1px solid var(--line2);color:var(--dim);
+  font-size:9px;font-weight:700;cursor:help;font-family:var(--sans);vertical-align:middle;
+  transition:.12s;line-height:1}
+.help:hover{color:var(--accent);border-color:var(--accent);background:#10202f}
+.help-light{border-color:#2f3e52}
+.tabs-help{margin-left:auto}
+
+/* POSITION CAPACITY STEPPERS */
+.cap-row{display:flex;justify-content:space-between;align-items:center;padding:10px 16px 4px}
+.cap-label{font-size:12px;color:var(--muted)}
+.stepper{display:flex;align-items:center;gap:8px}
+.step{width:28px;height:28px;border-radius:6px;border:1px solid var(--line2);background:var(--panel2);
+  color:var(--txt);font-size:16px;font-weight:700;cursor:pointer;line-height:1;display:flex;
+  align-items:center;justify-content:center}
+.step:hover{border-color:var(--accent);color:var(--accent)}
+.cap-val{font-family:var(--mono);font-size:18px;font-weight:700;min-width:34px;text-align:center}
+.cap-quick{padding-top:8px}
 
 /* FOOTER */
 .footer{padding:14px 20px;color:var(--dim);font-size:11px;border-top:1px solid var(--line);

@@ -16,6 +16,7 @@
     </div>
   </div>
   <div class="agent-controls">
+    <span class="help help-light" title="Agent controls. Start = begin auto-trading on the scan interval. Pause = stop trading but keep positions and resume later. Stop = halt the loop. Cycle ▸ = run one scan/trade pass right now. Status pill shows running/paused/stopped + cycle count.">?</span>
     <span id="agentStatus" class="status-pill status-stopped">● stopped</span>
     <span id="agentMeta" class="agent-meta"></span>
     <button id="btnStart" class="btn btn-go">Start</button>
@@ -29,29 +30,41 @@
   <!-- HEADLINE -->
   <section class="cards">
     <div class="card hero">
-      <div class="card-label">Total Value</div>
+      <div class="card-label">Total Value
+        <span class="help" title="Your total paper portfolio worth right now: cash on hand plus the live mark-to-market value of every open position. Starts at $200.">?</span>
+      </div>
       <div id="totalValue" class="card-value big">—</div>
       <div id="totalPnl" class="card-delta">—</div>
     </div>
     <div class="card">
-      <div class="card-label">Realized P&L</div>
+      <div class="card-label">Realized P&L
+        <span class="help" title="Profit or loss actually locked in from positions you've already SOLD or that resolved. Green = banked gains, red = banked losses.">?</span>
+      </div>
       <div id="realizedPnl" class="card-value">—</div>
     </div>
     <div class="card">
-      <div class="card-label">Unrealized P&L</div>
+      <div class="card-label">Unrealized P&L
+        <span class="help" title="Paper profit/loss on positions still OPEN, marked to the current live price. It moves every refresh and isn't locked in until you close.">?</span>
+      </div>
       <div id="unrealizedPnl" class="card-value">—</div>
     </div>
     <div class="card">
-      <div class="card-label">Cash</div>
+      <div class="card-label">Cash
+        <span class="help" title="Uninvested paper USDC available to open new positions. Buying spends cash; selling/closing returns it.">?</span>
+      </div>
       <div id="cash" class="card-value">—</div>
     </div>
     <div class="card">
-      <div class="card-label">Win Rate</div>
+      <div class="card-label">Win Rate
+        <span class="help" title="Share of CLOSED trades that ended in profit. Only counts positions that have been sold or resolved — open positions don't count yet.">?</span>
+      </div>
       <div id="winRate" class="card-value">—</div>
       <div id="tradeCount" class="card-delta muted">—</div>
     </div>
     <div class="card">
-      <div class="card-label">Open / Max</div>
+      <div class="card-label">Open / Max
+        <span class="help" title="How many positions are open vs the maximum the agent may hold at once. Raise the max with the +/- buttons in 'Position Capacity'.">?</span>
+      </div>
       <div id="openPos" class="card-value">—</div>
       <div id="drawdown" class="card-delta muted">—</div>
     </div>
@@ -62,14 +75,18 @@
     <div class="col-main">
       <section class="panel">
         <div class="panel-head">
-          <h2>Equity Curve</h2>
+          <h2>Equity Curve
+            <span class="help" title="Your total portfolio value over time. Each point is a snapshot taken every agent cycle. The dashed line is your starting/deposited basis — above it (green) means you're up, below (red) means down.">?</span>
+          </h2>
           <span id="equityRange" class="panel-sub"></span>
         </div>
         <canvas id="equityChart" height="220"></canvas>
       </section>
 
       <section class="panel">
-        <div class="panel-head"><h2>Open Positions</h2><span id="posCount" class="panel-sub"></span></div>
+        <div class="panel-head"><h2>Open Positions
+          <span class="help" title="Markets you currently hold. 'Entry' is your average buy price, 'Mark' is the live price now, and P&L is the unrealized gain/loss. Click 'close' to sell at the current order book.">?</span>
+        </h2><span id="posCount" class="panel-sub"></span></div>
         <div class="table-wrap">
           <table id="posTable">
             <thead><tr>
@@ -86,6 +103,8 @@
         <div class="panel-head tabs">
           <button class="tab active" data-tab="trades">Trade History</button>
           <button class="tab" data-tab="decisions">Reasoning Log</button>
+          <button class="tab" data-tab="reports">Hourly Log</button>
+          <span class="help tabs-help" title="Trade History = every simulated buy/sell. Reasoning Log = why the agent acted or passed on each market. Hourly Log = a performance snapshot saved every hour for later analysis (also written to the server logs / fly logs).">?</span>
         </div>
         <div class="table-wrap" id="tradesPane">
           <table id="tradesTable">
@@ -106,13 +125,55 @@
             <tbody></tbody>
           </table>
         </div>
+        <div class="table-wrap hidden" id="reportsPane">
+          <table id="reportsTable">
+            <thead><tr>
+              <th>Time</th><th class="num">Total</th><th class="num">P&L %</th>
+              <th class="num">Realized</th><th class="num">Unreal.</th>
+              <th class="num">Pos</th><th class="num">Win%</th>
+              <th class="num">Trades 1h</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
       </section>
     </div>
 
     <!-- RIGHT: controls -->
     <div class="col-side">
       <section class="panel">
-        <div class="panel-head"><h2>Add Paper Funds</h2></div>
+        <div class="panel-head"><h2>Position Capacity
+          <span class="help" title="How aggressively the agent diversifies. 'Max positions' is the most markets it can hold at once (each uses up to 5% of equity). 'Markets / scan' is how many top markets it surveys per cycle — higher finds more candidates. Changes apply instantly.">?</span>
+        </h2></div>
+        <div class="cap-row">
+          <div class="cap-label">Max positions</div>
+          <div class="stepper">
+            <button class="step" data-key="max_concurrent_positions" data-delta="-1">−</button>
+            <span id="capMaxPos" class="cap-val">—</span>
+            <button class="step" data-key="max_concurrent_positions" data-delta="1">+</button>
+          </div>
+        </div>
+        <div class="quick-funds cap-quick">
+          <button class="chip set-cap" data-key="max_concurrent_positions" data-val="10">10</button>
+          <button class="chip set-cap" data-key="max_concurrent_positions" data-val="20">20</button>
+          <button class="chip set-cap" data-key="max_concurrent_positions" data-val="30">30</button>
+          <button class="chip set-cap" data-key="max_concurrent_positions" data-val="50">50</button>
+        </div>
+        <div class="cap-row">
+          <div class="cap-label">Markets / scan</div>
+          <div class="stepper">
+            <button class="step" data-key="markets_per_scan" data-delta="-10">−</button>
+            <span id="capScan" class="cap-val">—</span>
+            <button class="step" data-key="markets_per_scan" data-delta="10">+</button>
+          </div>
+        </div>
+        <div id="capMsg" class="settings-msg"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><h2>Add Paper Funds
+          <span class="help" title="Top up your paper balance. Deposits also raise your cost basis, so adding funds never shows up as fake profit — your P&L stays honest.">?</span>
+        </h2></div>
         <div class="fund-row">
           <input id="fundAmount" type="number" min="1" step="1" value="100" />
           <button id="btnFund" class="btn btn-go">Deposit</button>
@@ -125,14 +186,18 @@
       </section>
 
       <section class="panel">
-        <div class="panel-head"><h2>Strategy Parameters</h2></div>
+        <div class="panel-head"><h2>Strategy Parameters
+          <span class="help" title="Every knob the agent uses, editable live (no redeploy). Risk per trade, the favorite price band, liquidity gates, and take-profit/stop-loss. Hover each field's label for what it does. Click Save to apply.">?</span>
+        </h2></div>
         <form id="settingsForm" class="settings"></form>
         <button id="btnSaveSettings" class="btn btn-go full">Save Parameters</button>
         <div id="settingsMsg" class="settings-msg"></div>
       </section>
 
       <section class="panel">
-        <div class="panel-head"><h2>Strategy</h2></div>
+        <div class="panel-head"><h2>Strategy
+          <span class="help" title="The trading edge the agent exploits, in plain terms. This box explains the favorite-longshot bias logic it trades on.">?</span>
+        </h2></div>
         <p class="strat-desc">
           <strong>Favorite-longshot bias.</strong> Longshots are overpriced and
           clear favorites underpriced. The agent buys YES on favorites in the

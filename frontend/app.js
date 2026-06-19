@@ -30,8 +30,10 @@ const SETTING_FIELDS = [
   ["stop_loss_pct", "Stop loss", 0.05],
   ["min_trade_usd", "Min trade $", 1],
 ];
+const CAP_MIN = { max_concurrent_positions: 1, markets_per_scan: 10 };
 
 let equityData = [];
+let SETTINGS = {};
 
 async function refresh() {
   try {
@@ -55,7 +57,8 @@ function renderHeadline(s) {
   $("cash").textContent = money(pf.cash_balance);
   $("winRate").textContent = s.win_rate.toFixed(1) + "%";
   $("tradeCount").textContent = `${s.closed_trades} closed / ${s.total_trades} trades`;
-  $("openPos").textContent = `${pf.num_open_positions} / ${pf.starting_balance ? 10 : 10}`;
+  const maxPos = SETTINGS.max_concurrent_positions || pf.num_open_positions;
+  $("openPos").textContent = `${pf.num_open_positions} / ${maxPos}`;
   $("drawdown").textContent = `DD ${pf.drawdown_pct.toFixed(1)}% · start ${money(pf.starting_balance)}`;
   $("posCount").textContent = pf.num_open_positions + " open";
 }
@@ -101,7 +104,15 @@ async function loadTrades() {
   const t = await api("/api/trades?limit=200");
   const tb = $("tradesTable").querySelector("tbody");
   if (!t.length) { tb.innerHTML = `<tr><td colspan="8" class="empty">No trades yet.</td></tr>`; return; }
-  tb.innerHTML = t.map((r) => `
+  tb.innerHTML = t.map((r) => {
+    // Color the proceeds of a SELL by realized P&L: green if we made money,
+    // red if we lost. BUYs are neutral (cash out, no realized result yet).
+    const isSell = r.action === "SELL" && r.entry_avg != null;
+    const pnl = isSell ? (r.price - r.entry_avg) * r.shares : null;
+    const procCell = isSell
+      ? `<td class="num ${cls(pnl)}" title="Realized P&L ${signed(pnl)} (sold @ ${r.price.toFixed(3)} vs entry ${r.entry_avg.toFixed(3)})">${money(r.total_cost)} <span class="pnl-tag">${signed(pnl)}</span></td>`
+      : `<td class="num">${money(r.total_cost)}</td>`;
+    return `
     <tr>
       <td>${ts(r.executed_at)}</td>
       <td><span class="badge ${r.action}">${r.action}</span></td>
@@ -109,9 +120,10 @@ async function loadTrades() {
       <td class="mkt" title="${esc(r.market_question)}">${esc(r.market_question)}</td>
       <td class="num">${r.shares.toFixed(1)}</td>
       <td class="num">${r.price.toFixed(3)}</td>
-      <td class="num">${money(r.total_cost)}</td>
+      ${procCell}
       <td class="reason-cell" title="${esc(r.reasoning)}">${esc(r.reasoning)}</td>
-    </tr>`).join("");
+    </tr>`;
+  }).join("");
 }
 
 async function loadDecisions() {
@@ -126,6 +138,26 @@ async function loadDecisions() {
       <td class="num">${r.confidence != null ? r.confidence.toFixed(2) : "—"}</td>
       <td class="mkt" title="${esc(r.market_question)}">${esc(r.market_question)}</td>
       <td class="reason-cell" title="${esc(r.reasoning)}">${esc(r.reasoning)}</td>
+    </tr>`).join("");
+}
+
+async function loadReports() {
+  const d = await api("/api/reports?limit=168");
+  const tb = $("reportsTable").querySelector("tbody");
+  if (!d.length) {
+    tb.innerHTML = `<tr><td colspan="8" class="empty">No hourly reports yet — one is saved automatically every hour (and to the server logs).</td></tr>`;
+    return;
+  }
+  tb.innerHTML = d.map((r) => `
+    <tr>
+      <td>${ts(r.ts)}</td>
+      <td class="num">${money(r.total_value)}</td>
+      <td class="num ${cls(r.pnl_pct)}">${r.pnl_pct.toFixed(2)}%</td>
+      <td class="num ${cls(r.realized_pnl)}">${signed(r.realized_pnl)}</td>
+      <td class="num ${cls(r.unrealized_pnl)}">${signed(r.unrealized_pnl)}</td>
+      <td class="num">${r.num_positions}</td>
+      <td class="num">${r.win_rate.toFixed(0)}%</td>
+      <td class="num">${r.trades_last_hour}</td>
     </tr>`).join("");
 }
 
@@ -191,22 +223,46 @@ function drawEquity() {
 }
 
 // ---- SETTINGS ----
+function renderCapacity() {
+  if ($("capMaxPos")) $("capMaxPos").textContent = SETTINGS.max_concurrent_positions ?? "—";
+  if ($("capScan")) $("capScan").textContent = SETTINGS.markets_per_scan ?? "—";
+}
 async function loadSettings() {
   const s = await api("/api/settings");
+  SETTINGS = s;
   const f = $("settingsForm");
   f.innerHTML = SETTING_FIELDS.map(([k, label, step]) => `
     <div class="setting">
       <label for="set_${k}">${label}</label>
       <input id="set_${k}" type="number" step="${step}" value="${s[k]}" />
     </div>`).join("");
+  renderCapacity();
 }
 $("btnSaveSettings").onclick = async () => {
   const body = {};
   SETTING_FIELDS.forEach(([k]) => { body[k] = parseFloat($("set_" + k).value); });
-  await api("/api/settings", "POST", body);
+  const s = await api("/api/settings", "POST", body);
+  SETTINGS = s; renderCapacity();
   const m = $("settingsMsg"); m.textContent = "✓ Parameters saved.";
   setTimeout(() => (m.textContent = ""), 2500);
 };
+
+// ---- POSITION CAPACITY STEPPERS ----
+async function applyCap(key, value) {
+  const min = CAP_MIN[key] || 1;
+  value = Math.max(min, Math.round(value));
+  const s = await api("/api/settings", "POST", { [key]: value });
+  SETTINGS = s; renderCapacity();
+  if ($("set_" + key)) $("set_" + key).value = SETTINGS[key]; // keep form in sync
+  const m = $("capMsg");
+  m.textContent = `✓ ${key === "markets_per_scan" ? "Markets/scan" : "Max positions"} set to ${SETTINGS[key]}.`;
+  setTimeout(() => (m.textContent = ""), 2500);
+  refresh();
+}
+document.querySelectorAll(".step").forEach((b) =>
+  b.onclick = () => applyCap(b.dataset.key, (SETTINGS[b.dataset.key] || 0) + (+b.dataset.delta)));
+document.querySelectorAll(".set-cap").forEach((c) =>
+  c.onclick = () => applyCap(c.dataset.key, +c.dataset.val));
 
 // ---- AGENT CONTROLS ----
 const ctl = (path) => async () => { await api(path, "POST"); refresh(); };
@@ -225,21 +281,21 @@ $("btnFund").onclick = async () => {
   const amt = parseFloat($("fundAmount").value);
   if (amt > 0) { await api("/api/add-funds", "POST", { amount: amt }); refresh(); }
 };
-document.querySelectorAll(".chip").forEach((c) =>
+document.querySelectorAll(".chip[data-amt]").forEach((c) =>
   c.onclick = async () => { await api("/api/add-funds", "POST", { amount: +c.dataset.amt }); refresh(); });
 
 // ---- TABS ----
+const PANES = { trades: "tradesPane", decisions: "decisionsPane", reports: "reportsPane" };
 document.querySelectorAll(".tab").forEach((t) =>
   t.onclick = () => {
     document.querySelectorAll(".tab").forEach((x) => x.classList.remove("active"));
     t.classList.add("active");
-    const isTrades = t.dataset.tab === "trades";
-    $("tradesPane").classList.toggle("hidden", !isTrades);
-    $("decisionsPane").classList.toggle("hidden", isTrades);
+    Object.entries(PANES).forEach(([k, id]) => $(id).classList.toggle("hidden", t.dataset.tab !== k));
+    if (t.dataset.tab === "reports") loadReports();
   });
 
 // ---- INIT + POLL ----
-function tickSlow() { loadTrades(); loadDecisions(); loadEquity(); }
+function tickSlow() { loadTrades(); loadDecisions(); loadEquity(); loadReports(); }
 refresh(); loadSettings(); tickSlow();
 setInterval(refresh, 4000);
 setInterval(tickSlow, 8000);

@@ -99,9 +99,35 @@ naive mid-price. See `backend/paper_engine_core.py::_simulate_fill`.
 | Starting balance | `TRADEBOT_START_BALANCE=500 ./run.sh` (only used on first DB creation) |
 | Add funds later | Dashboard → **Add Paper Funds**, or `POST /api/add-funds {"amount":100}` |
 | Strategy params | Dashboard → **Strategy Parameters** → Save (persisted in DB) |
+| **Max positions** | Dashboard → **Position Capacity** → −/+ or 10/20/30/50 buttons (raises both the strategy cap *and* the portfolio risk-config cap so it truly holds more) |
 | Scan interval | `scan_interval_sec` param (default 60s) |
 | DB location | `TRADEBOT_DB_PATH` env (default `~/.polymarket-paper/portfolio.db`) |
 | Port | `PORT` env (default 8765 local) |
+| **Private access** | Set `TRADEBOT_AUTH_PASSWORD` (+ optional `TRADEBOT_AUTH_USER`, default `admin`). Whole site then needs HTTP Basic login. Unset = open (local). |
+| **Hourly reports** | Auto-saved every hour → Dashboard **Hourly Log** tab, `GET /api/reports`, **and** stdout/`fly logs` (`[HOURLY ...]` lines). Tune cadence with `TRADEBOT_REPORT_INTERVAL_SEC`. |
+
+### Make the deployed dashboard private (Fly)
+
+The app supports HTTP Basic Auth gating the entire site. Turn it on with a Fly
+**secret** (never commit it):
+```bash
+fly secrets set TRADEBOT_AUTH_PASSWORD='your-strong-password'
+# optional: fly secrets set TRADEBOT_AUTH_USER='mario'
+```
+Fly redeploys automatically; the URL now prompts for login and is no longer open
+to anyone with the link. No secret set = open (fine for local dev).
+
+### Hourly performance logs (for strategy analysis)
+
+Every hour the agent writes a rich snapshot — total value, P&L %, realized,
+unrealized, position count, win rate, trades/decisions in the last hour, and the
+top positions — to:
+- the **Hourly Log** tab in the dashboard,
+- `GET /api/reports?limit=168` (JSON, for pulling into analysis), and
+- **stdout**, so `fly logs` captures a `[HOURLY ...]` line you can grep later.
+
+To analyze and tune later, pull `GET /api/reports` (or scrape `fly logs`), look
+at the equity/P&L trend per hour, then adjust **Strategy Parameters** live.
 
 ### CLI (no dashboard)
 

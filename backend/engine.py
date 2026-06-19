@@ -133,6 +133,28 @@ def _ensure_extra_schema():
 
             CREATE INDEX IF NOT EXISTS idx_decisions_pf_ts
                 ON decisions(portfolio_name, ts);
+
+            CREATE TABLE IF NOT EXISTS hourly_reports (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                portfolio_name TEXT NOT NULL,
+                ts             TEXT NOT NULL,
+                total_value    REAL NOT NULL,
+                cash_balance   REAL NOT NULL,
+                positions_value REAL NOT NULL,
+                realized_pnl   REAL NOT NULL,
+                unrealized_pnl REAL NOT NULL,
+                pnl_pct        REAL NOT NULL,
+                num_positions  INTEGER NOT NULL,
+                win_rate       REAL NOT NULL,
+                closed_trades  INTEGER NOT NULL,
+                total_trades   INTEGER NOT NULL,
+                decisions_last_hour INTEGER NOT NULL DEFAULT 0,
+                trades_last_hour INTEGER NOT NULL DEFAULT 0,
+                detail         TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_hourly_pf_ts
+                ON hourly_reports(portfolio_name, ts);
             """
         )
         conn.commit()
@@ -204,6 +226,29 @@ def save_settings(name: str, updates: dict) -> dict:
                  config = excluded.config, updated_at = excluded.updated_at""",
             (name, json.dumps(cfg), _now()),
         )
+        # Keep the portfolio's hard risk_config in sync with the strategy
+        # settings, so raising the position cap (or per-trade risk) in the UI
+        # actually takes effect — place_order validates against risk_config,
+        # not these settings.
+        pf = conn.execute(
+            "SELECT id, risk_config FROM portfolios WHERE name = ? AND active = 1 "
+            "ORDER BY id DESC LIMIT 1", (name,),
+        ).fetchone()
+        if pf:
+            risk = json.loads(pf["risk_config"])
+            risk["max_concurrent_positions"] = int(cfg["max_concurrent_positions"])
+            # per-trade hard cap must be >= sizing target, or trades get rejected
+            risk["max_position_pct"] = max(
+                float(cfg["risk_per_trade_pct"]), risk.get("max_position_pct", 0.05))
+            # approval + single-market caps must allow the per-trade size through
+            risk["human_approval_pct"] = max(
+                risk.get("human_approval_pct", 0.20), risk["max_position_pct"] + 0.01)
+            risk["max_single_market_pct"] = max(
+                risk.get("max_single_market_pct", 0.10), risk["max_position_pct"] + 0.01)
+            conn.execute(
+                "UPDATE portfolios SET risk_config = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(risk), _now(), pf["id"]),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -430,5 +475,113 @@ def portfolio_exists(name: str = "default") -> bool:
             "SELECT 1 FROM portfolios WHERE name = ? AND active = 1 LIMIT 1", (name,)
         ).fetchone()
         return row is not None
+    finally:
+        conn.close()
+
+
+# --------------------------------------------------------------------------
+# Summary + hourly performance reports
+# --------------------------------------------------------------------------
+
+def compute_summary(name: str = "default", refresh: bool = True) -> dict:
+    """Portfolio + agent state + realized/unrealized P&L and win rate."""
+    pf = get_portfolio(name, refresh_prices=refresh)
+    state = get_agent_state(name)
+    trades = get_trades(name, 5000)
+    sells = [t for t in trades if t["action"] == "SELL" and t.get("entry_avg") is not None]
+    realized = sum((t["price"] - t["entry_avg"]) * t["shares"] for t in sells)
+    wins = sum(1 for t in sells if (t["price"] - t["entry_avg"]) > 0)
+    win_rate = (wins / len(sells) * 100) if sells else 0.0
+    unrealized = sum(p["unrealized_pnl"] for p in pf["positions"])
+    return {
+        "portfolio": pf,
+        "agent": state,
+        "realized_pnl": round(realized, 2),
+        "unrealized_pnl": round(unrealized, 2),
+        "closed_trades": len(sells),
+        "total_trades": len(trades),
+        "win_rate": round(win_rate, 1),
+    }
+
+
+def _count_since(table: str, name: str, since_iso: str) -> int:
+    conn = _conn()
+    try:
+        col = "executed_at" if table == "trades" else "ts"
+        idcol = "portfolio_id" if table == "trades" else "portfolio_name"
+        if table == "trades":
+            pf = pe._active_portfolio(conn, name)
+            key = pf["id"]
+        else:
+            key = name
+        row = conn.execute(
+            f"SELECT COUNT(*) c FROM {table} WHERE {idcol} = ? AND {col} >= ?",
+            (key, since_iso),
+        ).fetchone()
+        return row["c"] if row else 0
+    finally:
+        conn.close()
+
+
+def record_hourly_report(name: str = "default") -> dict:
+    """Persist a rich hourly performance snapshot and return it."""
+    from datetime import timedelta
+    s = compute_summary(name, refresh=True)
+    pf = s["portfolio"]
+    hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    dec_1h = _count_since("decisions", name, hour_ago)
+    trd_1h = _count_since("trades", name, hour_ago)
+    top = sorted(pf["positions"], key=lambda p: abs(p["unrealized_pnl"]), reverse=True)[:5]
+    detail = json.dumps({
+        "top_positions": [
+            {"q": (p["market_question"] or "")[:60], "side": p["side"],
+             "entry": p["avg_entry"], "mark": p["current_price"],
+             "upnl": p["unrealized_pnl"]} for p in top],
+    })
+    rec = {
+        "ts": _now(),
+        "total_value": pf["total_value"],
+        "cash_balance": pf["cash_balance"],
+        "positions_value": pf["positions_value"],
+        "realized_pnl": s["realized_pnl"],
+        "unrealized_pnl": s["unrealized_pnl"],
+        "pnl_pct": pf["pnl_pct"],
+        "num_positions": pf["num_open_positions"],
+        "win_rate": s["win_rate"],
+        "closed_trades": s["closed_trades"],
+        "total_trades": s["total_trades"],
+        "decisions_last_hour": dec_1h,
+        "trades_last_hour": trd_1h,
+        "detail": detail,
+    }
+    conn = _conn()
+    try:
+        conn.execute(
+            """INSERT INTO hourly_reports
+               (portfolio_name, ts, total_value, cash_balance, positions_value,
+                realized_pnl, unrealized_pnl, pnl_pct, num_positions, win_rate,
+                closed_trades, total_trades, decisions_last_hour, trades_last_hour, detail)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (name, rec["ts"], rec["total_value"], rec["cash_balance"],
+             rec["positions_value"], rec["realized_pnl"], rec["unrealized_pnl"],
+             rec["pnl_pct"], rec["num_positions"], rec["win_rate"],
+             rec["closed_trades"], rec["total_trades"], rec["decisions_last_hour"],
+             rec["trades_last_hour"], rec["detail"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return rec
+
+
+def get_hourly_reports(name: str = "default", limit: int = 168) -> list[dict]:
+    conn = _conn()
+    try:
+        rows = conn.execute(
+            """SELECT * FROM hourly_reports WHERE portfolio_name = ?
+               ORDER BY id DESC LIMIT ?""",
+            (name, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
