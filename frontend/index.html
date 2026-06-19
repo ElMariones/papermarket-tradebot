@@ -206,6 +206,17 @@
           stop-loss, or market resolution.
         </p>
       </section>
+
+      <section class="panel danger">
+        <div class="panel-head"><h2>Danger Zone
+          <span class="help" title="Reset wipes ALL positions, trades, equity history, decisions and hourly reports, and sets your balance back to the amount below. Your strategy parameters and position cap are kept. This cannot be undone.">?</span>
+        </h2></div>
+        <div class="fund-row">
+          <input id="resetBalance" type="number" min="1" step="1" value="200" title="Balance to restart with" />
+          <button id="btnReset" class="btn btn-stop">Reset Everything</button>
+        </div>
+        <div id="resetMsg" class="settings-msg"></div>
+      </section>
     </div>
   </div>
 </main>

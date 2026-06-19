@@ -154,6 +154,13 @@ class Handler(BaseHTTPRequestHandler):
                     token, side, PORTFOLIO, reasoning="Manual close from dashboard."))
             if path == "/api/report":
                 return self._send_json(engine.record_hourly_report(PORTFOLIO))
+            if path == "/api/reset":
+                if not body.get("confirm"):
+                    return self._send_json(
+                        {"error": "reset requires confirm:true"}, status=400)
+                bal = body.get("balance")
+                bal = float(bal) if bal not in (None, "") else None
+                return self._send_json(engine.reset_all(PORTFOLIO, balance=bal))
             return self._send_json({"error": "not found"}, status=404)
         except Exception as exc:
             return self._send_json({"error": str(exc)}, status=400)

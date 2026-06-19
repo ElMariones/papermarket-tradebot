@@ -284,6 +284,27 @@ $("btnFund").onclick = async () => {
 document.querySelectorAll(".chip[data-amt]").forEach((c) =>
   c.onclick = async () => { await api("/api/add-funds", "POST", { amount: +c.dataset.amt }); refresh(); });
 
+// ---- RESET (with confirmation) ----
+$("btnReset").onclick = async () => {
+  const bal = parseFloat($("resetBalance").value) || 200;
+  const ok = confirm(
+    `Reset EVERYTHING?\n\nThis permanently wipes all positions, trades, equity ` +
+    `history, decisions and hourly reports, and restarts your balance at $${bal.toFixed(0)}.\n\n` +
+    `Your strategy parameters and position cap are kept. This cannot be undone.`);
+  if (!ok) return;
+  const b = $("btnReset"); b.textContent = "Resetting…"; b.disabled = true;
+  try {
+    const r = await api("/api/reset", "POST", { confirm: true, balance: bal });
+    const m = $("resetMsg");
+    if (r.error) { m.textContent = "✗ " + r.error; m.style.color = "var(--red)"; }
+    else { m.textContent = `✓ Reset to $${bal.toFixed(0)}.`; m.style.color = "var(--green)"; }
+    setTimeout(() => (m.textContent = ""), 4000);
+  } finally {
+    b.textContent = "Reset Everything"; b.disabled = false;
+    refresh(); loadSettings(); loadTrades(); loadDecisions(); loadEquity(); loadReports();
+  }
+};
+
 // ---- TABS ----
 const PANES = { trades: "tradesPane", decisions: "decisionsPane", reports: "reportsPane" };
 document.querySelectorAll(".tab").forEach((t) =>

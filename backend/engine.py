@@ -479,6 +479,51 @@ def portfolio_exists(name: str = "default") -> bool:
         conn.close()
 
 
+def reset_all(name: str = "default", balance: float | None = None,
+              keep_running: bool = True) -> dict:
+    """
+    Full reset: wipe ALL trading data for this portfolio (positions, trades,
+    snapshots, equity curve, decisions, hourly reports) and re-create a fresh
+    portfolio at `balance`. Strategy/agent SETTINGS are preserved (they're your
+    tuning, not data). Returns the fresh portfolio state.
+    """
+    if balance is None:
+        balance = float(os.environ.get("TRADEBOT_START_BALANCE", "200"))
+    if balance <= 0:
+        raise ValueError("Reset balance must be positive")
+
+    # Preserve the prior settings (so a raised position cap survives reset).
+    prior_settings = get_settings(name)
+    conn = _conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM portfolios WHERE name = ?", (name,)).fetchall()]
+        if ids:
+            qmarks = ",".join("?" * len(ids))
+            for tbl in ("positions", "trades", "daily_snapshots"):
+                conn.execute(f"DELETE FROM {tbl} WHERE portfolio_id IN ({qmarks})", ids)
+        for tbl in ("equity_snapshots", "decisions", "hourly_reports", "agent_state"):
+            conn.execute(f"DELETE FROM {tbl} WHERE portfolio_name = ?", (name,))
+        conn.execute("UPDATE portfolios SET active = 0 WHERE name = ?", (name,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    risk = {
+        "max_position_pct": max(0.05, float(prior_settings["risk_per_trade_pct"])),
+        "max_concurrent_positions": int(prior_settings["max_concurrent_positions"]),
+        "max_single_market_pct": 0.10, "daily_loss_limit_pct": 0.05,
+        "max_drawdown_pct": 0.30, "human_approval_pct": 0.20,
+    }
+    init_portfolio(balance, name, risk)
+    save_settings(name, {})  # re-sync risk_config with preserved settings
+    record_equity(name)      # seed the new equity curve
+    set_agent_status(name, "running" if keep_running else "stopped",
+                     message="portfolio reset")
+    return get_portfolio(name, refresh_prices=False)
+
+
 # --------------------------------------------------------------------------
 # Summary + hourly performance reports
 # --------------------------------------------------------------------------

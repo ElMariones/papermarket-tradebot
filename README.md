@@ -138,11 +138,34 @@ python3 agent.py --cycles 3 --interval 5  # run 3 agent cycles against live data
 python3 worker.py                       # run the agent loop forever
 ```
 
-### Where the data lives
+### Where the data & logs live (for analysis days/weeks later)
 
-A single SQLite file (default `~/.polymarket-paper/portfolio.db`) holds
-portfolios, positions, trades, daily snapshots, intraday equity snapshots, the
-decision/reasoning log, agent settings, and agent control state.
+**Everything is a single SQLite file** — locally `~/.polymarket-paper/portfolio.db`,
+on Fly `/data/portfolio.db` (the **persistent volume**, so it survives restarts and
+redeploys). Tables: `portfolios`, `positions`, `trades`, `daily_snapshots`,
+`equity_snapshots`, `decisions` (reasoning log), `hourly_reports`, `agent_settings`,
+`agent_state`.
+
+The **durable, long-term** record for analysis is the `hourly_reports` table on
+that volume. Two ways to read it back later:
+- **Dashboard → "Hourly Log" tab** (always shows the full stored history), or
+- **`GET /api/reports?limit=500`** (JSON) — e.g.
+  `curl -u <user>:<pass> https://<app>.fly.dev/api/reports?limit=500 > reports.json`
+
+The agent also prints each report to **stdout** (`fly logs` shows `[HOURLY ...]`
+lines). That's handy for a live glance, **but `fly logs` is NOT long-term storage**
+— Fly only retains recent logs. For "in a few days" analysis, use the
+`hourly_reports` table / `/api/reports` endpoint, which persist on the volume
+indefinitely. To grab the whole DB for offline analysis:
+`fly ssh sftp get /data/portfolio.db ./portfolio.db`.
+
+### Reset everything
+
+Dashboard → **Danger Zone → Reset Everything** (asks for confirmation). Wipes all
+positions, trades, equity history, decisions and hourly reports, and restarts the
+balance at the amount you enter. Your **strategy parameters and position cap are
+kept**. API equivalent: `POST /api/reset {"confirm":true,"balance":200}`
+(`confirm:true` is required — no accidental resets).
 
 ---
 

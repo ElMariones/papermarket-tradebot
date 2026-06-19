@@ -6,6 +6,12 @@ cd "$(dirname "$0")"
 
 python3 -m pip install -q -r requirements.txt 2>/dev/null || true
 
+# Load local secrets/overrides if present (.env is gitignored — e.g. the
+# dashboard login TRADEBOT_AUTH_USER / TRADEBOT_AUTH_PASSWORD).
+if [ -f "$(dirname "$0")/.env" ]; then
+  set -a; . "$(dirname "$0")/.env"; set +a
+fi
+
 export TRADEBOT_STANDALONE=1
 export TRADEBOT_START_BALANCE="${TRADEBOT_START_BALANCE:-200}"
 export PORT="${PORT:-8765}"

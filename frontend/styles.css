@@ -93,6 +93,9 @@ tbody tr:hover{background:#0e1620}
 .empty{padding:24px;text-align:center;color:var(--dim)}
 .hidden{display:none}
 .pnl-tag{font-size:10px;opacity:.85;margin-left:2px}
+.panel.danger{border-color:#3d1420}
+.panel.danger .panel-head{border-bottom-color:#3d1420}
+.panel.danger h2{color:var(--red)}
 
 /* FUNDS */
 .fund-row{display:flex;gap:8px;padding:14px 16px}
