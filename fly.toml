@@ -1,44 +1,31 @@
-# fly.toml — TradeBOT deployment config.
+# fly.toml app configuration file generated for tradebot-polymarket on 2026-06-19T14:45:30Z
 #
-# IMPORTANT ARCHITECTURE NOTE (read before changing to a [processes] split):
-# A Fly Volume attaches to exactly ONE machine at a time, and this app stores
-# state in a single SQLite file. So we deliberately run web + agent worker in
-# ONE machine (the web process runs the worker loop in-process via
-# TRADEBOT_STANDALONE=1). Splitting into separate `web` and `worker` machines
-# would mean two machines cannot share the SQLite volume — that path requires
-# switching to Fly Postgres. For a personal paper-trading bot, one machine +
-# SQLite on a volume is simpler, cheaper, and correct. See README "Deployment".
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
-# Change `app` to a unique name before first deploy (fly app names are global).
 
-app = "tradebot-polymarket"
-primary_region = "iad"   # change to your nearest region
+app = 'tradebot-polymarket'
+primary_region = 'iad'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
 [env]
-  PORT = "8080"
-  TRADEBOT_DB_PATH = "/data/portfolio.db"
-  TRADEBOT_STANDALONE = "1"
-  TRADEBOT_START_BALANCE = "200"
+  PORT = '8080'
+  TRADEBOT_DB_PATH = '/data/portfolio.db'
+  TRADEBOT_STANDALONE = '1'
+  TRADEBOT_START_BALANCE = '200'
 
-# Persistent volume for the SQLite database. Survives redeploys/restarts.
-# Create it once with:  fly volumes create tradebot_data --size 1 --region iad
-[mounts]
-  source = "tradebot_data"
-  destination = "/data"
+[[mounts]]
+  source = 'tradebot_data'
+  destination = '/data'
 
 [http_service]
   internal_port = 8080
   force_https = true
-  # Keep the single machine ALWAYS ON. The agent worker runs inside this
-  # machine and has no inbound HTTP traffic of its own, so we must NOT let Fly
-  # suspend it on idle — otherwise the agent silently stops trading.
-  auto_stop_machines = false
+  auto_stop_machines = 'off'
   auto_start_machines = true
   min_machines_running = 1
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "256mb"
+  size = 'shared-cpu-1x'
+  memory = '256mb'
