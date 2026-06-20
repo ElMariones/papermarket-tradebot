@@ -187,8 +187,16 @@ DEFAULT_SETTINGS = {
     "min_book_usd": 50.0,          # min resting depth on the side we hit
     "max_spread": 0.06,            # skip wide markets (bid/ask spread)
     # exits
-    "take_profit_pct": 0.20,       # close when price up 20% vs entry
-    "stop_loss_pct": 0.25,         # close when price down 25% vs entry
+    # The favorite-longshot edge is realized at RESOLUTION, so exits are tuned
+    # to hold winners to convergence and only cut a position when its thesis is
+    # broken — not on ordinary intraday noise (see TRADING_ANALYSIS.md).
+    "take_profit_pct": 0.20,       # recycle capital when price up 20% vs entry
+    "stop_loss_pct": 0.40,         # wide % stop: let a strong favorite breathe
+    "stop_loss_price": 0.50,       # hard floor: cut once our side is no longer the favorite
+    # resolution settlement (book disappears the moment a market resolves)
+    "resolve_hi": 0.99,            # our side priced >= this => treat as won, settle 1.0
+    "resolve_lo": 0.01,            # our side priced <= this => treat as lost, settle 0.0
+    "reentry_cooldown_min": 180,   # don't re-enter a market we just exited (min)
 }
 
 

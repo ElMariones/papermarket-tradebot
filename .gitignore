@@ -23,8 +23,9 @@ env/
 .idea/
 .vscode/
 
-# Logs
+# Logs / exported runtime data (generated, not source — like the DB)
 *.log
+logs/
 
 # Node (not used today, here in case the frontend grows a build step)
 node_modules/

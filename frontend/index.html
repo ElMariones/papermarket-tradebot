@@ -5,6 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>TradeBOT Terminal</title>
 <link rel="stylesheet" href="/styles.css" />
+<script>
+  /* Set the theme before first paint to avoid a flash. Honors a saved choice,
+     otherwise follows the OS preference. */
+  (function () {
+    try {
+      var saved = localStorage.getItem("tradebot-theme");
+      var theme = saved ||
+        (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches
+          ? "light" : "dark");
+      if (theme === "light") document.documentElement.setAttribute("data-theme", "light");
+    } catch (e) {}
+  })();
+</script>
 </head>
 <body>
 
@@ -19,6 +32,7 @@
   </div>
 
   <div class="topbar-right">
+    <button id="btnTheme" class="btn btn-icon" title="Toggle light / dark theme" aria-label="Toggle theme">☾</button>
     <div class="clock">
       <span id="localClock" class="clock-time">--:--:--</span>
       <span id="clockZone" class="clock-zone">local</span>

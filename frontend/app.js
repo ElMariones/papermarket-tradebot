@@ -195,16 +195,28 @@ async function loadEquity() {
   equityData = await api("/api/equity");
   drawEquity();
 }
+function cssVar(name, fallback) {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
+}
 function drawEquity() {
   const cv = $("equityChart"); const dpr = window.devicePixelRatio || 1;
   const W = cv.clientWidth, H = 232;
   cv.width = W * dpr; cv.height = H * dpr;
   const ctx = cv.getContext("2d"); ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, W, H);
+  // theme-aware palette (follows the active light/dark variables)
+  const C = {
+    grid: cssVar("--grid", "#1a212a"),
+    faint: cssVar("--text-faint", "#5a6776"),
+    accent: cssVar("--accent", "#e3a838"),
+    up: cssVar("--up", "#27c08a"),
+    down: cssVar("--down", "#f0506a"),
+  };
   const pad = { l: 56, r: 12, t: 12, b: 22 };
   const data = equityData;
   if (data.length < 2) {
-    ctx.fillStyle = "#5a6776"; ctx.font = "12px monospace";
+    ctx.fillStyle = C.faint; ctx.font = "12px monospace";
     ctx.fillText("Collecting equity data — run a few agent cycles.", pad.l, H / 2);
     return;
   }
@@ -216,7 +228,7 @@ function drawEquity() {
   const start = data[0].total_value;
 
   // grid + y labels
-  ctx.strokeStyle = "#1a212a"; ctx.fillStyle = "#5a6776"; ctx.font = "10px monospace";
+  ctx.strokeStyle = C.grid; ctx.fillStyle = C.faint; ctx.font = "10px monospace";
   ctx.textAlign = "right";
   for (let g = 0; g <= 4; g++) {
     const v = min + (g / 4) * (max - min); const yy = y(v);
@@ -225,21 +237,20 @@ function drawEquity() {
   }
   // baseline (starting / deposited basis) in amber
   if (start >= min && start <= max) {
-    ctx.strokeStyle = "#e3a838"; ctx.globalAlpha = .55; ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = C.accent; ctx.globalAlpha = .55; ctx.setLineDash([4, 4]);
     ctx.beginPath(); ctx.moveTo(pad.l, y(start)); ctx.lineTo(W - pad.r, y(start)); ctx.stroke();
     ctx.setLineDash([]); ctx.globalAlpha = 1;
   }
   const last = vals[vals.length - 1];
   const up = last >= start;
-  const color = up ? "#27c08a" : "#f0506a";
-  // area fill
-  const grad = ctx.createLinearGradient(0, pad.t, 0, H - pad.b);
-  grad.addColorStop(0, up ? "rgba(39,192,138,.22)" : "rgba(240,80,106,.20)");
-  grad.addColorStop(1, "rgba(0,0,0,0)");
+  const color = up ? C.up : C.down;
+  // area fill (fade the P&L color via alpha so it follows the theme)
+  ctx.save();
   ctx.beginPath(); ctx.moveTo(x(0), y(vals[0]));
   data.forEach((d, i) => ctx.lineTo(x(i), y(d.total_value)));
   ctx.lineTo(x(data.length - 1), H - pad.b); ctx.lineTo(x(0), H - pad.b); ctx.closePath();
-  ctx.fillStyle = grad; ctx.fill();
+  ctx.globalAlpha = .20; ctx.fillStyle = color; ctx.fill();
+  ctx.restore();
   // line
   ctx.beginPath(); ctx.moveTo(x(0), y(vals[0]));
   data.forEach((d, i) => ctx.lineTo(x(i), y(d.total_value)));
@@ -388,6 +399,22 @@ $("btnExportCsv").onclick = async () => {
   const rows = await api("/api/" + spec[0]);
   const stamp = new Date().toISOString().slice(0, 19).replace(/[:T-]/g, "");
   download(`tradebot-${activeTab}-${stamp}.csv`, toCsv(rows, spec[1]), "text/csv");
+};
+
+// ---- THEME TOGGLE ----
+function syncThemeButton() {
+  const light = document.documentElement.getAttribute("data-theme") === "light";
+  // show the icon for the mode you'd switch TO: sun while dark, moon while light
+  if ($("btnTheme")) $("btnTheme").textContent = light ? "☾" : "☀";
+}
+syncThemeButton();
+$("btnTheme").onclick = () => {
+  const light = document.documentElement.getAttribute("data-theme") === "light";
+  if (light) document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", "light");
+  try { localStorage.setItem("tradebot-theme", light ? "dark" : "light"); } catch (e) {}
+  syncThemeButton();
+  drawEquity();  // repaint the canvas with the new palette
 };
 
 // ---- INIT + POLL ----

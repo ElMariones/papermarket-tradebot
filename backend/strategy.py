@@ -103,8 +103,14 @@ def evaluate_market(market: dict, settings: dict, portfolio: dict) -> dict:
             f"({'too close to certainty' if fav_price > fav_high else 'no clear favorite'})."))
 
     side, token = fav_side, fav_token
-    depth_in_band = (fav_price - fav_low) / max(fav_high - fav_low, 1e-9)
-    base = 0.50 + 0.40 * _clamp(depth_in_band)
+    # Confidence/sizing is driven by UPSIDE ROOM, not by how close the favorite
+    # is to certainty. A favorite at fav_low still has room to converge to 1.0;
+    # one at fav_high has almost none. The old model did the opposite — it bet
+    # biggest on 0.96 favorites with ~4% upside against a much larger stop, an
+    # inverted reward/risk (see TRADING_ANALYSIS.md). EV per dollar of the
+    # favorite-longshot premium is highest where the entry is cheapest in-band.
+    upside_room = (fav_high - fav_price) / max(fav_high - fav_low, 1e-9)
+    base = 0.60 + 0.25 * _clamp(upside_room)
     thesis = (f"{fav_side} is the favorite at {fav_price:.2f}, inside the "
               f"underpriced-favorite band [{fav_low:.2f},{fav_high:.2f}]; "
               f"favorite-longshot bias implies the favorite is underpriced "

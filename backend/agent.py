@@ -43,27 +43,62 @@ def _resolved_outcome(market: dict, side: str) -> float | None:
     return 0.0 if yes_won else 1.0
 
 
+def _exit_pnl(r) -> float:
+    return r["realized_pnl"] if isinstance(r, dict) else r[0]["realized_pnl"]
+
+
+def _close_or_settle(token: str, side: str, name: str, cur: float, reason: str):
+    """
+    Exit a position via the live order book, but fall back to a no-book
+    settlement when the book is gone (HTTP 404 / no bids) — which is exactly
+    what happens the instant a market resolves. Without this fallback a resolved
+    position can never be closed and gets stuck forever (the historical
+    "SL close failed ... 404 Not Found" bug that froze capital). On fallback we
+    settle at the decided outcome: 1.0 if our side is winning, else 0.0.
+    """
+    try:
+        return engine.close_position(token, side, name, reasoning=reason)
+    except Exception:
+        settle_px = 1.0 if cur >= 0.5 else 0.0
+        return engine.settle_position(
+            token, side, settle_px, name,
+            reasoning=f"{reason} [order book gone — settled at outcome {settle_px:.0f}]")
+
+
 def manage_positions(name: str, settings: dict) -> list[str]:
     """Settle resolved markets and apply take-profit / stop-loss exits."""
     notes = []
+    resolve_hi = settings.get("resolve_hi", 0.99)
+    resolve_lo = settings.get("resolve_lo", 0.01)
+    sl_price = settings.get("stop_loss_price", 0.50)
     pf = engine.get_portfolio(name, refresh_prices=True)
     for pos in pf["positions"]:
         token, side = pos["token_id"], pos["side"]
         entry, cur = pos["avg_entry"], pos["current_price"]
         q = (pos.get("market_question") or "")[:50]
 
-        # 1) resolution settlement
+        # 1) resolution settlement — Gamma 'closed' flag, when available.
         market = None
         try:
             market = fetch_market_by_token(token)
         except Exception:
             pass
         settle = _resolved_outcome(market, side)
+
+        # 1b) price-based resolution: Gamma's 'closed' flag lags the market by
+        # minutes, but the CLOB price pins to ~1.0/0.0 (and the book 404s) the
+        # moment it resolves. Treat an extreme mark as resolved so winners get
+        # booked and losers stop spamming failed closes — both free the slot.
+        if settle is None and cur is not None:
+            if cur >= resolve_hi:
+                settle = 1.0
+            elif cur <= resolve_lo:
+                settle = 0.0
         if settle is not None:
             try:
                 r = engine.settle_position(
                     token, side, settle, name,
-                    reasoning=f"Market resolved; settled {side} at {settle:.0f}.")
+                    reasoning=f"Resolved; settled {side} at {settle:.0f}.")
                 engine.log_decision(name, token, q, "EXIT", True, None,
                                     f"RESOLVED -> settled {side} @ {settle:.0f}, "
                                     f"P&L ${r['realized_pnl']:+.2f}")
@@ -77,13 +112,12 @@ def manage_positions(name: str, settings: dict) -> list[str]:
             continue
         change = (cur - entry) / entry
 
-        # 2) take profit
+        # 2) take profit — recycle capital once a position has run far enough.
         if change >= settings["take_profit_pct"]:
             try:
-                r = engine.close_position(
-                    token, side, name,
-                    reasoning=f"Take profit: +{change*100:.1f}% vs entry.")
-                pnl = r["realized_pnl"] if isinstance(r, dict) else r[0]["realized_pnl"]
+                r = _close_or_settle(token, side, name, cur,
+                                     f"Take profit: +{change*100:.1f}% vs entry.")
+                pnl = _exit_pnl(r)
                 engine.log_decision(name, token, q, "EXIT", True, None,
                                     f"TAKE PROFIT +{change*100:.1f}% -> P&L ${pnl:+.2f}")
                 notes.append(f"took profit {side} '{q}' +{change*100:.1f}% "
@@ -92,20 +126,44 @@ def manage_positions(name: str, settings: dict) -> list[str]:
                 notes.append(f"TP close failed {q}: {exc}")
             continue
 
-        # 3) stop loss
-        if change <= -settings["stop_loss_pct"]:
+        # 3) stop loss — thesis broken. Fire on EITHER a wide % drawdown OR an
+        # absolute price floor (our 'favorite' is no longer favored). The price
+        # floor caps catastrophic tails earlier than the % stop on cheap entries.
+        if change <= -settings["stop_loss_pct"] or cur <= sl_price:
+            why = (f"Stop loss: {change*100:.1f}% vs entry"
+                   if change <= -settings["stop_loss_pct"]
+                   else f"Stop: price {cur:.2f} below floor {sl_price:.2f} (thesis broken)")
             try:
-                r = engine.close_position(
-                    token, side, name,
-                    reasoning=f"Stop loss: {change*100:.1f}% vs entry.")
-                pnl = r["realized_pnl"] if isinstance(r, dict) else r[0]["realized_pnl"]
+                r = _close_or_settle(token, side, name, cur, why + ".")
+                pnl = _exit_pnl(r)
                 engine.log_decision(name, token, q, "EXIT", True, None,
-                                    f"STOP LOSS {change*100:.1f}% -> P&L ${pnl:+.2f}")
-                notes.append(f"stopped out {side} '{q}' {change*100:.1f}% "
+                                    f"{why} -> P&L ${pnl:+.2f}")
+                notes.append(f"stopped out {side} '{q}' @ {cur:.2f} "
                              f"(P&L ${pnl:+.2f})")
             except Exception as exc:
                 notes.append(f"SL close failed {q}: {exc}")
     return notes
+
+
+def _cooldown_tokens(name: str, settings: dict) -> set[str]:
+    """Tokens we exited within the cooldown window — don't immediately re-enter.
+
+    The historical logs show the bot stopping out of a market and re-buying the
+    SAME losing market four seconds later, doubling the loss. A cooldown blocks
+    that churn (and re-buying a market that just resolved)."""
+    minutes = settings.get("reentry_cooldown_min", 180)
+    if minutes <= 0:
+        return set()
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+    out = set()
+    try:
+        for t in engine.get_trades(name, 500):
+            if t["action"] == "SELL" and (t.get("executed_at") or "") >= cutoff:
+                out.add(t["token_id"])
+    except Exception:
+        pass
+    return out
 
 
 def scan_and_trade(name: str, settings: dict) -> list[str]:
@@ -113,6 +171,7 @@ def scan_and_trade(name: str, settings: dict) -> list[str]:
     notes = []
     pf = engine.get_portfolio(name, refresh_prices=False)
     open_tokens = {p["token_id"] for p in pf["positions"]}
+    cooldown = _cooldown_tokens(name, settings)
 
     try:
         markets = fetch_active_markets(limit=int(settings["markets_per_scan"]))
@@ -126,6 +185,8 @@ def scan_and_trade(name: str, settings: dict) -> list[str]:
             break
         if mk["yes_token"] in open_tokens or mk["no_token"] in open_tokens:
             continue  # already holding this market
+        if mk["yes_token"] in cooldown or mk["no_token"] in cooldown:
+            continue  # recently exited — in cooldown to avoid churn/re-entry
 
         dec = strategy.evaluate_market(mk, settings, pf)
         acted = False
