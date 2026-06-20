@@ -1,94 +1,146 @@
 # TradeBOT — Polymarket Paper-Trading Agent + Dashboard
 
 An autonomous **paper-trading** agent for [Polymarket](https://polymarket.com)
-prediction markets, with a local (or cloud-hosted) trading-terminal dashboard.
+prediction markets, paired with a real-time trading-terminal dashboard.
 
 It pulls **real live market data** (CLOB order books + Gamma market metadata),
-applies a strategy, and **simulates** every fill against the real order book.
-**No wallet, no keys, no real money — ever.** All execution is simulated.
+runs a strategy, and **simulates** every fill against the real order book —
+walking actual bids/asks for a true average price and slippage.
+**No wallet, no keys, no real money — ever.** Execution is always simulated.
 
 ```
- ┌──────────────┐   live prices    ┌─────────────────┐   simulated fills   ┌────────────┐
- │ Polymarket   │ ───────────────▶ │  Agent loop      │ ─────────────────▶ │  SQLite    │
- │ CLOB + Gamma │                  │  strategy + risk │                     │  ledger    │
- └──────────────┘                  └─────────────────┘                     └─────┬──────┘
+ ┌──────────────┐   live prices    ┌──────────────────┐  simulated fills   ┌────────────┐
+ │ Polymarket   │ ───────────────▶ │  Agent loop       │ ─────────────────▶ │  SQLite    │
+ │ CLOB + Gamma │                  │  strategy + risk  │                    │  ledger    │
+ └──────────────┘                  └──────────────────┘                    └─────┬──────┘
                                                                                   │
                                                        ┌──────────────────────────▼─────┐
-                                                       │  Dashboard (dark terminal UI)   │
+                                                       │  Dashboard (web terminal UI)    │
                                                        └─────────────────────────────────┘
 ```
 
 ---
 
-## Quick start (local)
+## Quick start
 
 ```bash
-cd /Volumes/SanDisk2TB/TradeBOT
+git clone https://github.com/ElMariones/papermarket-tradebot.git
+cd papermarket-tradebot
 ./run.sh
 # then open http://127.0.0.1:8765
 ```
 
 That single command starts the dashboard **and** the agent worker (in-process).
-Click **Start** in the top bar to begin trading, **Cycle ▸** to run one scan
-immediately, or **Pause/Stop** to halt.
+Click **Start** in the top bar to begin trading, **Cycle** to run one scan
+immediately, or **Pause / Stop** to halt.
 
-Requirements: Python 3.11+. The only third-party dependency is `certifi`
-(`pip install -r requirements.txt`, which `run.sh` does for you).
+**Requirements:** Python 3.11+. The only third-party dependency is `certifi`
+(`run.sh` installs it for you).
 
 ---
 
-## What it does
+## How it works
 
-- **Starting paper balance:** `$200` (configurable, see below).
-- **Risk per trade:** max 5% of total value, scaled by confidence.
-- **Max concurrent positions:** 10.
-- **Strategy:** favorite-longshot bias exploitation (see below).
-- **Persistence:** everything is in SQLite and survives restarts.
+Each agent cycle does three things:
+
+1. **Manage open positions** — settle markets that have resolved, and apply exit
+   rules to the rest.
+2. **Scan live markets** — pull the top markets by 24h volume, score each one
+   through the strategy, and place simulated buys that clear both the strategy's
+   confidence bar and the portfolio's risk guards.
+3. **Snapshot equity** — record a point on the equity curve.
+
+Defaults: `$200` starting paper balance, up to 5% of equity risked per trade
+(scaled by confidence), capped at a configurable number of concurrent positions.
+Everything persists to SQLite and survives restarts.
 
 ### The strategy — favorite-longshot bias
 
-Prediction (and betting) markets show a durable inefficiency: **longshots are
+Prediction and betting markets show a durable inefficiency: **longshots are
 systematically overpriced** and **clear favorites are slightly underpriced.**
-TradeBOT harvests both sides:
-
-- **Buy YES on favorites** priced in the `[fav_low, fav_high]` band (default
-  `0.80–0.96`) — the favorite is underpriced.
-- **Fade longshots by buying NO** when the YES price is below `longshot_thresh`
-  (default `0.06`) — the longshot is overpriced, so NO carries positive EV.
+TradeBOT harvests it with one symmetric rule — **buy the favorite side** (YES or
+NO, whichever is priced higher) when its price sits inside the underpriced band
+(default `0.80–0.96`). Buying the favorite *is* fading the overpriced longshot on
+the other side.
 
 Every candidate must clear three liquidity gates before any trade:
+
 1. 24-hour volume ≥ `min_volume24h`
-2. resting order-book depth ≥ `min_book_usd` on the side we'd hit
+2. resting order-book depth ≥ `min_book_usd` on the side it would hit
 3. bid/ask spread ≤ `max_spread`
 
-…and never pays above `max_entry_price` (default `0.97`, so there's real upside
-left). Position size = `risk_per_trade_pct × total_value × confidence`, capped by
-the 5% per-trade risk limit and available cash.
+…and it never pays above `max_entry_price` (default `0.97`, so there's real
+upside left). Position size scales with **upside room** — the cheaper a favorite
+is inside the band, the more convergence room it has to resolution, so it earns a
+larger (still risk-capped) allocation.
 
-**Exits:** take-profit (`+take_profit_pct` vs entry), stop-loss
-(`−stop_loss_pct`), or **market resolution** (settled at the real 0/1 outcome).
+### Exits — built around resolution
 
-Every decision — acted on **or** passed — is logged in plain English and visible
+The favorite-longshot edge is realized when a market **resolves** and the
+favorite converges toward its true value, so exits are tuned to let winners run
+to settlement rather than scalp intraday noise:
+
+- **Resolution settlement** — when a market resolves, the position is booked at
+  the real `0` / `1` outcome. This is detected robustly even though the live
+  order book disappears the moment a market resolves.
+- **Take-profit** recycles capital once a position has run far enough.
+- **Stop-loss** combines a wide percentage stop with an absolute price floor, so
+  a position is cut only when its thesis is genuinely broken (the "favorite" is
+  no longer favored) — not on ordinary price wobble.
+- **Re-entry cooldown** prevents the bot from immediately re-buying a market it
+  just exited.
+
+Every decision — acted on **or** passed — is logged in plain English and shown
 in the dashboard's **Reasoning Log** tab.
 
-### Fills are realistic
-
-Market orders are **walked through the real order book** (consuming asks for
-buys, bids for sells) to compute a true average fill price and slippage — not a
-naive mid-price. See `backend/paper_engine_core.py::_simulate_fill`.
+> A deep dive into the strategy, a worked analysis of a real trading run, and the
+> reasoning behind these exit rules lives in
+> [`TRADING_ANALYSIS.md`](./TRADING_ANALYSIS.md).
 
 ---
 
 ## Dashboard
 
-- **Headline:** total value, total P&L (realized + unrealized), cash, win rate,
-  open/max positions, drawdown.
-- **Equity curve** (hand-rolled canvas chart).
-- **Open positions** with live mark-to-market and one-click close.
-- **Trade history** and **Reasoning Log** tabs.
-- **Add paper funds** (deposits raise the cost basis so P&L stays honest).
+- **Headline tape:** total value, total P&L (realized + unrealized), cash, win
+  rate, open/max positions, drawdown.
+- **Equity curve** — a hand-rolled canvas chart.
+- **Open positions** — live mark-to-market with one-click close.
+- **Trade history**, **Reasoning Log**, and **Hourly Log** tabs.
+- **Add paper funds** — deposits raise the cost basis so P&L stays honest.
 - **Start / Pause / Stop / Cycle** agent controls.
-- **Strategy parameter editor** — every knob above, no code editing.
+- **Strategy parameter editor** — every knob below, no code editing.
+- **Light / dark theme** toggle (follows your OS preference, remembers your choice).
+- **Export** — download the full history as JSON, or the visible tab as CSV.
+
+All timestamps render in your **local timezone**; stored values are UTC.
+
+---
+
+## Tech
+
+- **Backend:** Python 3.11, standard library only (`http.server`) — a
+  zero-framework REST API that also hosts the static dashboard. `certifi` is the
+  lone dependency, used to verify HTTPS to Polymarket.
+- **Frontend:** vanilla HTML / CSS / JavaScript — no build step, no framework.
+- **Storage:** a single SQLite file (WAL mode) holds the entire ledger.
+- **Market data:** Polymarket's CLOB API (order books, prices) and Gamma API
+  (market discovery / metadata), both public and read-only.
+
+### Project layout
+
+```
+.
+├── backend/
+│   ├── engine.py             # ledger + extensions (funds, settings, equity, decisions)
+│   ├── paper_engine_core.py  # fill simulation + SQLite core (real order-book walking)
+│   ├── polymarket_client.py  # live market discovery (Gamma API)
+│   ├── strategy.py           # favorite-longshot decision engine
+│   ├── agent.py              # cycle: manage exits → scan → trade; run-forever loop
+│   ├── worker.py             # standalone agent process entrypoint
+│   └── server.py             # stdlib REST API + static dashboard host
+├── frontend/                 # index.html · styles.css · app.js (vanilla)
+├── Dockerfile · requirements.txt · .env.example · run.sh
+```
 
 ---
 
@@ -96,181 +148,43 @@ naive mid-price. See `backend/paper_engine_core.py::_simulate_fill`.
 
 | What | How |
 |------|-----|
-| Starting balance | `TRADEBOT_START_BALANCE=500 ./run.sh` (only used on first DB creation) |
+| Starting balance | `TRADEBOT_START_BALANCE=500 ./run.sh` (used only when the DB is first created) |
 | Add funds later | Dashboard → **Add Paper Funds**, or `POST /api/add-funds {"amount":100}` |
-| Strategy params | Dashboard → **Strategy Parameters** → Save (persisted in DB) |
-| **Max positions** | Dashboard → **Position Capacity** → −/+ or 10/20/30/50 buttons (raises both the strategy cap *and* the portfolio risk-config cap so it truly holds more) |
+| Strategy params | Dashboard → **Strategy Parameters** → Save (persisted in the DB) |
+| Max positions | Dashboard → **Position Capacity** (raises both the strategy cap and the portfolio risk cap) |
 | Scan interval | `scan_interval_sec` param (default 60s) |
 | DB location | `TRADEBOT_DB_PATH` env (default `~/.polymarket-paper/portfolio.db`) |
-| Port | `PORT` env (default 8765 local) |
-| **Private access** | Set `TRADEBOT_AUTH_PASSWORD` (+ optional `TRADEBOT_AUTH_USER`, default `admin`). Whole site then needs HTTP Basic login. Unset = open (local). |
-| **Hourly reports** | Auto-saved every hour → Dashboard **Hourly Log** tab, `GET /api/reports`, **and** stdout/`fly logs` (`[HOURLY ...]` lines). Tune cadence with `TRADEBOT_REPORT_INTERVAL_SEC`. |
-| **Export everything** | History panel → **Export all** downloads one JSON (`GET /api/export`) with results, every trade, the full reasoning log, equity curve, hourly reports and settings. **CSV** exports the visible tab as a spreadsheet. |
-| **Times** | All timestamps render in the viewer's **local timezone** (the top-bar clock shows it); stored values are UTC. |
-
-### Make the deployed dashboard private (Fly)
-
-The app supports HTTP Basic Auth gating the entire site. Turn it on with a Fly
-**secret** (never commit it):
-```bash
-fly secrets set TRADEBOT_AUTH_PASSWORD='your-strong-password'
-# optional: fly secrets set TRADEBOT_AUTH_USER='mario'
-```
-Fly redeploys automatically; the URL now prompts for login and is no longer open
-to anyone with the link. No secret set = open (fine for local dev).
-
-### Hourly performance logs (for strategy analysis)
-
-Every hour the agent writes a rich snapshot — total value, P&L %, realized,
-unrealized, position count, win rate, trades/decisions in the last hour, and the
-top positions — to:
-- the **Hourly Log** tab in the dashboard,
-- `GET /api/reports?limit=168` (JSON, for pulling into analysis), and
-- **stdout**, so `fly logs` captures a `[HOURLY ...]` line you can grep later.
-
-To analyze and tune later, pull `GET /api/reports` (or scrape `fly logs`), look
-at the equity/P&L trend per hour, then adjust **Strategy Parameters** live.
+| Port | `PORT` env (default 8765) |
+| Optional login | Set `TRADEBOT_AUTH_PASSWORD` (and optional `TRADEBOT_AUTH_USER`) to require HTTP Basic auth for the whole site. Unset = open. |
 
 ### CLI (no dashboard)
 
 ```bash
 cd backend
-python3 polymarket_client.py            # pull 5 live markets + prices
+python3 polymarket_client.py              # pull 5 live markets + prices
 python3 agent.py --cycles 3 --interval 5  # run 3 agent cycles against live data
-python3 worker.py                       # run the agent loop forever
+python3 worker.py                         # run the agent loop forever
 ```
 
-### Where the data & logs live (for analysis days/weeks later)
-
-**Everything is a single SQLite file** — locally `~/.polymarket-paper/portfolio.db`,
-on Fly `/data/portfolio.db` (the **persistent volume**, so it survives restarts and
-redeploys). Tables: `portfolios`, `positions`, `trades`, `daily_snapshots`,
-`equity_snapshots`, `decisions` (reasoning log), `hourly_reports`, `agent_settings`,
-`agent_state`.
-
-The **durable, long-term** record for analysis is the `hourly_reports` table on
-that volume. Two ways to read it back later:
-- **Dashboard → "Hourly Log" tab** (always shows the full stored history), or
-- **`GET /api/reports?limit=500`** (JSON) — e.g.
-  `curl -u <user>:<pass> https://<app>.fly.dev/api/reports?limit=500 > reports.json`
-
-The agent also prints each report to **stdout** (`fly logs` shows `[HOURLY ...]`
-lines). That's handy for a live glance, **but `fly logs` is NOT long-term storage**
-— Fly only retains recent logs. For "in a few days" analysis, use the
-`hourly_reports` table / `/api/reports` endpoint, which persist on the volume
-indefinitely. To grab the whole DB for offline analysis:
-`fly ssh sftp get /data/portfolio.db ./portfolio.db`.
-
-### Reset everything
+### Reset
 
 Dashboard → **Danger Zone → Reset Everything** (asks for confirmation). Wipes all
-positions, trades, equity history, decisions and hourly reports, and restarts the
-balance at the amount you enter. Your **strategy parameters and position cap are
-kept**. API equivalent: `POST /api/reset {"confirm":true,"balance":200}`
-(`confirm:true` is required — no accidental resets).
-
----
-
-## Project layout
-
-```
-TradeBOT/
-├── backend/
-│   ├── engine.py             # ledger + extensions (funds, settings, equity, decisions)
-│   ├── paper_engine_core.py  # vendored fill-sim + SQLite core (real order-book walking)
-│   ├── polymarket_client.py  # live market discovery (Gamma API)
-│   ├── strategy.py           # favorite-longshot decision engine
-│   ├── agent.py              # cycle: manage exits → scan → trade; run_forever loop
-│   ├── worker.py             # standalone agent process entrypoint
-│   └── server.py             # stdlib REST API + static dashboard host
-├── frontend/                 # index.html · styles.css · app.js (vanilla, dark terminal)
-├── Dockerfile · fly.toml · requirements.txt · .env.example · run.sh
-```
+positions, trades, equity history, decisions, and reports, then restarts the
+balance at the amount you enter. Strategy parameters are kept. API equivalent:
+`POST /api/reset {"confirm":true,"balance":200}`.
 
 ---
 
 ## Safety: this is paper trading
 
-`backend/agent.py` carries `LIVE_TRADING = False`. There is **no live-execution
-code path in this project at all** — flipping that flag does nothing on its own;
-a future live build would have to deliberately add an order-submission path. This
-boundary is identical locally and when deployed. Market data is real; execution
-is always simulated.
+`backend/agent.py` carries `LIVE_TRADING = False`, and there is **no
+live-execution code path in this project at all** — flipping that flag does
+nothing on its own. A future live build would have to deliberately add an
+order-submission path. Market data is real; execution is always simulated.
 
 ---
 
-## Deployment (Fly.io) — always-on in the cloud
+## License
 
-> **Architecture decision (important):** A Fly **Volume attaches to one machine
-> at a time**, and TradeBOT stores state in a single SQLite file. So we run the
-> web server **and** the agent worker **in one machine** (the web process runs
-> the worker loop in-process via `TRADEBOT_STANDALONE=1`). Splitting into
-> separate `web` and `worker` machines — as a `[processes]` block would — means
-> two machines can't share the SQLite volume; that path requires switching to
-> **Fly Postgres**. For a one-person paper bot, **one machine + SQLite on a
-> volume** is simpler, cheaper, and correct. The worker never idles out because
-> `auto_stop_machines = false` and `min_machines_running = 1` keep the machine
-> always on (it has no inbound HTTP of its own).
-
-### One-time setup
-
-```bash
-# 0. Install tooling if needed:
-#    GitHub:  brew install gh   (then: gh auth login)
-#    Fly:     curl -L https://fly.io/install.sh | sh   (then: fly auth login)
-
-# 1. Push to GitHub (private repo named after the project):
-gh repo create tradebot-polymarket --private --source=. --remote=origin --push
-
-# 2. Create the Fly app + volume (edit `app` name in fly.toml first — names are global):
-fly apps create tradebot-polymarket
-fly volumes create tradebot_data --size 1 --region iad   # match primary_region
-
-# 3. Deploy:
-fly deploy
-
-# 4. Open it:
-fly open          # public https URL, e.g. https://tradebot-polymarket.fly.dev
-```
-
-There are **no secrets** to set (paper trading needs none). If you later add any,
-use `fly secrets set KEY=value` — never put secrets in `fly.toml` or git.
-
-### Verify the deploy
-
-```bash
-fly status                       # machine is "started"
-fly logs                         # watch for "Agent worker running in-process" + cycle activity
-curl -s https://<your-app>.fly.dev/api/agent   # {"status":"running","cycles":N,...}
-```
-
-**Data-persistence test (the one that matters):**
-```bash
-fly machine restart <machine-id>   # or: fly deploy --strategy immediate
-# then reload the dashboard — your balance, positions and trade history are intact
-# because the DB is on the /data volume, not ephemeral container storage.
-```
-
-### Day-to-day
-
-| Task | Command / action |
-|------|------------------|
-| Deploy a change | `git commit -am "..." && git push && fly deploy` |
-| Check logs | `fly logs` |
-| Is the agent alive? | `curl https://<app>.fly.dev/api/agent` → `status:running`, rising `cycles` |
-| Add funds / change params | Just use the **dashboard UI** — no SSH, no redeploy |
-| Check from your phone | Open the `https://<app>.fly.dev` URL in any mobile browser |
-
-> Optional: add a GitHub Action to auto-deploy on push to `main`
-> (`superfly/flyctl-actions`), using a `FLY_API_TOKEN` repo secret from
-> `fly tokens create deploy`. The manual `fly deploy` flow above is fine to start.
-
----
-
-## Status / rough edges (v2 ideas)
-
-- Strategy is intentionally simple (one explainable edge). Add momentum/news
-  signals as additional, separately-toggleable strategies.
-- Equity curve is intraday snapshots; add selectable time ranges.
-- No backtest harness yet — it trades forward only.
-- Single portfolio in the UI (the engine supports more by name).
+Released as an educational reference for prediction-market mechanics and
+order-book fill simulation. Not financial advice.
