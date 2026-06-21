@@ -330,13 +330,25 @@ $("btnCycle").onclick = async () => {
   refresh(); loadTrades(); loadDecisions(); loadEquity();
 };
 
-// ---- FUNDS ----
-$("btnFund").onclick = async () => {
-  const amt = parseFloat($("fundAmount").value);
-  if (amt > 0) { await api("/api/add-funds", "POST", { amount: amt }); refresh(); }
-};
+// ---- FUNDS (deposit / withdraw) ----
+function fundMsg(text, ok) {
+  const m = $("fundMsg");
+  if (!m) return;
+  m.textContent = text;
+  m.style.color = ok ? "var(--up)" : "var(--down)";
+  setTimeout(() => (m.textContent = ""), 3500);
+}
+async function moveFunds(endpoint, amount, verb) {
+  if (!(amount > 0)) return;
+  const r = await api(endpoint, "POST", { amount });
+  if (r && r.error) fundMsg("✗ " + r.error, false);
+  else fundMsg(`✓ ${verb} $${amount.toFixed(2)}.`, true);
+  refresh(); loadProfiles();
+}
+$("btnFund").onclick = () => moveFunds("/api/add-funds", parseFloat($("fundAmount").value), "Deposited");
+$("btnWithdraw").onclick = () => moveFunds("/api/withdraw-funds", parseFloat($("fundAmount").value), "Withdrew");
 document.querySelectorAll(".chip[data-amt]").forEach((c) =>
-  c.onclick = async () => { await api("/api/add-funds", "POST", { amount: +c.dataset.amt }); refresh(); });
+  c.onclick = () => moveFunds("/api/add-funds", +c.dataset.amt, "Deposited"));
 
 // ---- RESET (with confirmation) ----
 $("btnReset").onclick = async () => {

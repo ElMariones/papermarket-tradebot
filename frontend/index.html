@@ -212,17 +212,19 @@
 
     <section class="panel">
       <div class="panel-head"><h2>Funds</h2>
-        <span class="help" title="Top up your paper balance. Deposits also raise your cost basis, so adding funds never shows as fake profit.">?</span>
+        <span class="help" title="Deposit or withdraw paper cash for this profile. Both adjust the cost basis, so moving money never shows as fake profit or loss. Withdrawals come from cash only — open positions aren't liquid.">?</span>
       </div>
       <div class="field-row">
         <input id="fundAmount" type="number" min="1" step="1" value="100" />
-        <button id="btnFund" class="btn btn-go">Deposit</button>
+        <button id="btnFund" class="btn btn-go" title="Add cash to this profile">Deposit</button>
+        <button id="btnWithdraw" class="btn btn-stop" title="Remove cash from this profile">Withdraw</button>
       </div>
       <div class="chip-row">
         <button class="chip" data-amt="50">+50</button>
         <button class="chip" data-amt="100">+100</button>
         <button class="chip" data-amt="500">+500</button>
       </div>
+      <div id="fundMsg" class="form-msg"></div>
     </section>
 
     <section class="panel">

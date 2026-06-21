@@ -150,6 +150,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/add-funds":
                 amt = float(body.get("amount", 0))
                 return self._send_json(engine.add_funds(amt, pf))
+            if path == "/api/withdraw-funds":
+                amt = float(body.get("amount", 0))
+                return self._send_json(engine.withdraw_funds(amt, pf))
             if path == "/api/settings":
                 # don't let the routing key leak into the strategy config
                 updates = {k: v for k, v in body.items() if k != "profile"}

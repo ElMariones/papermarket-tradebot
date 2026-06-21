@@ -213,7 +213,7 @@ PROFILES = ["Kaladin", "Adolin", "Dalinar", "Renarin"]
 PROFILE_META = {
     # Kaladin — balanced strong-favorite harvester (the tuned baseline).
     "Kaladin": {
-        "start_balance": 250.0,
+        "start_balance": 200.0,
         "blurb": "Balanced — strong favorites, hold to resolution.",
         "settings": {
             "fav_low": 0.80, "fav_high": 0.96, "max_entry_price": 0.97,
@@ -226,7 +226,7 @@ PROFILE_META = {
     },
     # Adolin — aggressive, wide net: more positions, lower bar, bigger size.
     "Adolin": {
-        "start_balance": 250.0,
+        "start_balance": 200.0,
         "blurb": "Aggressive — wide band, many positions, bigger size.",
         "settings": {
             "fav_low": 0.70, "fav_high": 0.97, "max_entry_price": 0.97,
@@ -239,7 +239,7 @@ PROFILE_META = {
     },
     # Dalinar — conservative: only deep favorites, tight liquidity, small size.
     "Dalinar": {
-        "start_balance": 500.0,
+        "start_balance": 200.0,
         "blurb": "Conservative — deep favorites only, tight liquidity.",
         "settings": {
             "fav_low": 0.88, "fav_high": 0.97, "max_entry_price": 0.98,
@@ -252,7 +252,7 @@ PROFILE_META = {
     },
     # Renarin — nimble mid-band fader: smaller, faster, quicker profit-taking.
     "Renarin": {
-        "start_balance": 150.0,
+        "start_balance": 200.0,
         "blurb": "Nimble — mid-band favorites, fast scan, quick profits.",
         "settings": {
             "fav_low": 0.75, "fav_high": 0.90, "max_entry_price": 0.93,
@@ -497,18 +497,31 @@ def get_decisions(name: str = "default", limit: int = 100) -> list[dict]:
 # Add funds
 # --------------------------------------------------------------------------
 
-def add_funds(amount: float, name: str = "default") -> dict:
+def _move_funds(amount: float, name: str, sign: int) -> dict:
+    """
+    Move paper capital in (sign=+1, deposit) or out (sign=-1, withdraw) of a
+    profile's CASH balance.
+
+    Both directions adjust the cost basis (starting_balance) by the same amount
+    so P&L stays honest — a deposit isn't fake profit, and a withdrawal isn't a
+    fake loss. Withdrawals come from cash only (open positions aren't liquid),
+    so you can never pull out more cash than the profile is holding.
+    """
     if amount <= 0:
         raise ValueError("Amount must be positive")
     conn = _conn()
     try:
         conn.execute("BEGIN IMMEDIATE")
         pf = pe._active_portfolio(conn, name)
-        new_balance = pf["cash_balance"] + amount
-        # Treat a deposit as added capital: raise the cost basis (starting_balance)
-        # so P&L stays honest (deposits aren't profit).
-        new_start = pf["starting_balance"] + amount
-        new_peak = pf["peak_value"] + amount
+        if sign < 0 and amount > pf["cash_balance"] + 1e-9:
+            conn.rollback()
+            raise ValueError(
+                f"Cannot withdraw ${amount:,.2f}: only ${pf['cash_balance']:,.2f} "
+                f"cash available (open positions aren't liquid).")
+        delta = sign * amount
+        new_balance = pf["cash_balance"] + delta
+        new_start = max(0.0, pf["starting_balance"] + delta)
+        new_peak = max(round(new_balance, 4), pf["peak_value"] + delta)
         conn.execute(
             """UPDATE portfolios
                SET cash_balance = ?, starting_balance = ?, peak_value = ?, updated_at = ?
@@ -520,6 +533,16 @@ def add_funds(amount: float, name: str = "default") -> dict:
     finally:
         conn.close()
     return get_portfolio(name, refresh_prices=False)
+
+
+def add_funds(amount: float, name: str = "default") -> dict:
+    """Deposit paper capital into a profile's cash balance."""
+    return _move_funds(amount, name, sign=+1)
+
+
+def withdraw_funds(amount: float, name: str = "default") -> dict:
+    """Withdraw paper capital from a profile's cash balance."""
+    return _move_funds(amount, name, sign=-1)
 
 
 def settle_position(token_id: str, side: str, price: float,
