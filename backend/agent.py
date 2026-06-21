@@ -203,8 +203,14 @@ def scan_and_trade(name: str, settings: dict) -> list[str]:
             except Exception as exc:
                 # risk guard or balance rejection — record why
                 dec["reasoning"] += f" [REJECTED: {exc}]"
-        engine.log_decision(name, dec["token_id"], dec["market_question"],
-                            dec["signal"], acted, dec["confidence"], dec["reasoning"])
+        # Only persist decisions worth reviewing: trades, rejected buy signals,
+        # and genuine in-band candidates (confidence > 0). Skip the ~90% of
+        # trivial "outside band / thin volume" PASSes — logging one row per
+        # market per cycle for 4 profiles bloated the DB by thousands of rows
+        # an hour (and the page cache that came with it).
+        if acted or dec["signal"] != "PASS" or (dec["confidence"] or 0) > 0:
+            engine.log_decision(name, dec["token_id"], dec["market_question"],
+                                dec["signal"], acted, dec["confidence"], dec["reasoning"])
     return notes
 
 
@@ -268,13 +274,22 @@ def _emit_hourly_report(name: str):
         print(f"[HOURLY] report failed: {exc}", flush=True)
 
 
-def run_forever(name: str = "default", stop_event: threading.Event | None = None):
+def run_forever(name: str = "default", stop_event: threading.Event | None = None,
+                start_delay: float = 0.0):
     """
     Long-lived runner: execute cycles while control state is 'running',
     idle while 'paused', exit-loop check honored each tick. Used by both the
     standalone worker process and the local in-process worker thread.
     Emits a persisted performance report every HOURLY_REPORT_SEC.
+
+    `start_delay` staggers multiple profile workers so their network-heavy
+    scans don't all spike memory at the same instant (avoids boot-time OOM).
     """
+    if start_delay:
+        for _ in range(int(start_delay)):
+            if stop_event is not None and stop_event.is_set():
+                return
+            time.sleep(1)
     last_report = time.monotonic()
     _emit_hourly_report(name)  # baseline at startup
     while stop_event is None or not stop_event.is_set():

@@ -220,10 +220,13 @@ def main():
 
     stop_event = threading.Event()
     if STANDALONE:
-        # one agent loop per profile, each obeying its own running/paused state
-        for name in engine.PROFILES:
+        # one agent loop per profile, each obeying its own running/paused state.
+        # Stagger their starts so the four don't fire network-heavy scans (and
+        # spike memory) at the same instant.
+        for i, name in enumerate(engine.PROFILES):
             threading.Thread(
-                target=agent.run_forever, args=(name, stop_event), daemon=True
+                target=agent.run_forever, args=(name, stop_event),
+                kwargs={"start_delay": i * 8}, daemon=True,
             ).start()
         print(f"Agent workers running in-process for {len(engine.PROFILES)} "
               f"profiles: {', '.join(engine.PROFILES)}")

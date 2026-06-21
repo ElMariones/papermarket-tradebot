@@ -28,4 +28,6 @@ primary_region = 'iad'
 
 [[vm]]
   size = 'shared-cpu-1x'
-  memory = '256mb'
+  # 4 independent profile workers run concurrently (live HTTP + JSON parsing +
+  # SQLite). 256mb OOM-killed them at boot; 512mb gives comfortable headroom.
+  memory = '512mb'

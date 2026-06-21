@@ -46,8 +46,9 @@ def main():
 
     print(f"Worker live for {len(engine.PROFILES)} profiles: "
           f"{', '.join(engine.PROFILES)}")
-    threads = [threading.Thread(target=agent.run_forever, args=(name,), daemon=True)
-               for name in engine.PROFILES]
+    threads = [threading.Thread(target=agent.run_forever, args=(name,),
+                                kwargs={"start_delay": i * 8}, daemon=True)
+               for i, name in enumerate(engine.PROFILES)]
     for t in threads:
         t.start()
     for t in threads:
