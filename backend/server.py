@@ -32,8 +32,6 @@ AUTH_PASSWORD = os.environ.get("TRADEBOT_AUTH_PASSWORD", "")
 FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend"
 PORT = int(os.environ.get("PORT", "8765"))          # Fly injects PORT
 HOST = os.environ.get("HOST", "0.0.0.0")
-PORTFOLIO = os.environ.get("TRADEBOT_PORTFOLIO", "default")
-STARTING_BALANCE = float(os.environ.get("TRADEBOT_START_BALANCE", "200"))
 # Standalone = run the agent worker loop in this same process (local default).
 # On a true split deploy you'd set this to 0 and run worker.py separately.
 STANDALONE = os.environ.get("TRADEBOT_STANDALONE", "1") not in ("0", "false", "")
@@ -103,30 +101,33 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         qs = parse_qs(parsed.query)
+        pf = engine.resolve_profile(qs.get("profile", [None])[0])
         try:
+            if path == "/api/profiles":
+                return self._send_json(engine.get_profiles_overview())
             if path == "/api/portfolio":
-                return self._send_json(engine.get_portfolio(PORTFOLIO, refresh_prices=True))
+                return self._send_json(engine.get_portfolio(pf, refresh_prices=True))
             if path == "/api/trades":
                 limit = int(qs.get("limit", ["100"])[0])
-                return self._send_json(engine.get_trades(PORTFOLIO, limit))
+                return self._send_json(engine.get_trades(pf, limit))
             if path == "/api/decisions":
                 limit = int(qs.get("limit", ["80"])[0])
-                return self._send_json(engine.get_decisions(PORTFOLIO, limit))
+                return self._send_json(engine.get_decisions(pf, limit))
             if path == "/api/equity":
-                return self._send_json(engine.get_equity_curve(PORTFOLIO))
+                return self._send_json(engine.get_equity_curve(pf))
             if path == "/api/settings":
-                return self._send_json(engine.get_settings(PORTFOLIO))
+                return self._send_json(engine.get_settings(pf))
             if path == "/api/agent":
-                return self._send_json(engine.get_agent_state(PORTFOLIO))
+                return self._send_json(engine.get_agent_state(pf))
             if path == "/api/summary":
-                return self._send_json(engine.compute_summary(PORTFOLIO))
+                return self._send_json(engine.compute_summary(pf))
             if path == "/api/reports":
                 limit = int(qs.get("limit", ["168"])[0])
-                return self._send_json(engine.get_hourly_reports(PORTFOLIO, limit))
+                return self._send_json(engine.get_hourly_reports(pf, limit))
             if path == "/api/export":
-                data = engine.export_all(PORTFOLIO)
+                data = engine.export_all(pf)
                 stamp = data["exported_at"][:19].replace(":", "").replace("-", "")
-                fname = f"tradebot-export-{stamp}.json"
+                fname = f"tradebot-{pf}-{stamp}.json"
                 body = json.dumps(data, default=str, indent=2).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -144,35 +145,38 @@ class Handler(BaseHTTPRequestHandler):
             return
         path = urlparse(self.path).path
         body = self._read_json()
+        pf = engine.resolve_profile(body.get("profile"))
         try:
             if path == "/api/add-funds":
                 amt = float(body.get("amount", 0))
-                return self._send_json(engine.add_funds(amt, PORTFOLIO))
+                return self._send_json(engine.add_funds(amt, pf))
             if path == "/api/settings":
-                return self._send_json(engine.save_settings(PORTFOLIO, body))
+                # don't let the routing key leak into the strategy config
+                updates = {k: v for k, v in body.items() if k != "profile"}
+                return self._send_json(engine.save_settings(pf, updates))
             if path == "/api/agent/start":
-                return self._send_json(agent.start(PORTFOLIO))
+                return self._send_json(agent.start(pf))
             if path == "/api/agent/pause":
-                return self._send_json(agent.pause(PORTFOLIO))
+                return self._send_json(agent.pause(pf))
             if path == "/api/agent/resume":
-                return self._send_json(agent.resume(PORTFOLIO))
+                return self._send_json(agent.resume(pf))
             if path == "/api/agent/stop":
-                return self._send_json(agent.stop(PORTFOLIO))
+                return self._send_json(agent.stop(pf))
             if path == "/api/agent/cycle":
-                return self._send_json(agent.run_cycle(PORTFOLIO))
+                return self._send_json(agent.run_cycle(pf))
             if path == "/api/close":
                 token = body.get("token_id"); side = body.get("side")
                 return self._send_json(engine.close_position(
-                    token, side, PORTFOLIO, reasoning="Manual close from dashboard."))
+                    token, side, pf, reasoning="Manual close from dashboard."))
             if path == "/api/report":
-                return self._send_json(engine.record_hourly_report(PORTFOLIO))
+                return self._send_json(engine.record_hourly_report(pf))
             if path == "/api/reset":
                 if not body.get("confirm"):
                     return self._send_json(
                         {"error": "reset requires confirm:true"}, status=400)
                 bal = body.get("balance")
                 bal = float(bal) if bal not in (None, "") else None
-                return self._send_json(engine.reset_all(PORTFOLIO, balance=bal))
+                return self._send_json(engine.reset_all(pf, balance=bal))
             return self._send_json({"error": "not found"}, status=404)
         except Exception as exc:
             return self._send_json({"error": str(exc)}, status=400)
@@ -194,22 +198,35 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
+def _ensure_profile(name: str) -> None:
+    """Create a profile's portfolio (with its preset strategy) if missing."""
+    if engine.portfolio_exists(name):
+        return
+    bal = engine.start_balance_for(name)
+    cfg = engine.get_settings(name)  # profile preset (merged over defaults)
+    engine.init_portfolio(bal, name, {
+        "max_position_pct": max(0.05, float(cfg["risk_per_trade_pct"])),
+        "max_concurrent_positions": int(cfg["max_concurrent_positions"]),
+        "max_single_market_pct": 0.10, "daily_loss_limit_pct": 0.05,
+        "max_drawdown_pct": 0.30, "human_approval_pct": 0.20,
+    })
+    engine.save_settings(name, {})  # persist the preset + sync hard risk caps
+    print(f"Initialized profile '{name}' with ${bal:,.2f}")
+
+
 def main():
-    if not engine.portfolio_exists(PORTFOLIO):
-        engine.init_portfolio(STARTING_BALANCE, PORTFOLIO, {
-            "max_position_pct": 0.05, "max_concurrent_positions": 10,
-            "max_single_market_pct": 0.10, "daily_loss_limit_pct": 0.05,
-            "max_drawdown_pct": 0.30, "human_approval_pct": 0.20,
-        })
-        print(f"Initialized '{PORTFOLIO}' portfolio with ${STARTING_BALANCE:,.2f}")
+    for name in engine.PROFILES:
+        _ensure_profile(name)
 
     stop_event = threading.Event()
     if STANDALONE:
-        # run the agent loop in a background thread within this process
-        t = threading.Thread(
-            target=agent.run_forever, args=(PORTFOLIO, stop_event), daemon=True)
-        t.start()
-        print("Agent worker running in-process (TRADEBOT_STANDALONE).")
+        # one agent loop per profile, each obeying its own running/paused state
+        for name in engine.PROFILES:
+            threading.Thread(
+                target=agent.run_forever, args=(name, stop_event), daemon=True
+            ).start()
+        print(f"Agent workers running in-process for {len(engine.PROFILES)} "
+              f"profiles: {', '.join(engine.PROFILES)}")
 
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"TradeBOT dashboard:  http://127.0.0.1:{PORT}  (bound {HOST}:{PORT})")

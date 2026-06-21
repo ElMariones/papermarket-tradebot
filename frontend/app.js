@@ -1,9 +1,21 @@
 // TradeBOT dashboard — vanilla JS, polls the stdlib API.
 const $ = (id) => document.getElementById(id);
+
+// Which of the four independent bots the dashboard is currently driving. Every
+// API call is scoped to this profile (GET via ?profile=, POST via body.profile)
+// so each bot's money, strategy, trades and logs stay fully separate.
+let CURRENT_PROFILE = localStorage.getItem("tradebot-profile") || "Kaladin";
+
 const api = async (path, method = "GET", body) => {
+  let url = path;
+  if (method === "GET") {
+    url += (path.includes("?") ? "&" : "?") + "profile=" + encodeURIComponent(CURRENT_PROFILE);
+  } else {
+    body = { ...(body || {}), profile: CURRENT_PROFILE };
+  }
   const opt = { method, headers: { "Content-Type": "application/json" } };
-  if (body) opt.body = JSON.stringify(body);
-  const r = await fetch(path, opt);
+  if (method !== "GET") opt.body = JSON.stringify(body);
+  const r = await fetch(url, opt);
   return r.json();
 };
 const money = (n) => (n < 0 ? "-$" : "$") + Math.abs(n).toFixed(2);
@@ -38,7 +50,9 @@ const SETTING_FIELDS = [
   ["min_book_usd", "Min book $", 10],
   ["max_spread", "Max spread", 0.01],
   ["take_profit_pct", "Take profit", 0.05],
-  ["stop_loss_pct", "Stop loss", 0.05],
+  ["stop_loss_pct", "Stop loss %", 0.05],
+  ["stop_loss_price", "Stop price floor", 0.05],
+  ["reentry_cooldown_min", "Re-entry cooldown (m)", 15],
   ["min_trade_usd", "Min trade $", 1],
 ];
 const CAP_MIN = { max_concurrent_positions: 1, markets_per_scan: 10 };
@@ -328,9 +342,10 @@ document.querySelectorAll(".chip[data-amt]").forEach((c) =>
 $("btnReset").onclick = async () => {
   const bal = parseFloat($("resetBalance").value) || 200;
   const ok = confirm(
-    `Reset EVERYTHING?\n\nThis permanently wipes all positions, trades, equity ` +
-    `history, decisions and hourly reports, and restarts your balance at $${bal.toFixed(0)}.\n\n` +
-    `Your strategy parameters and position cap are kept. This cannot be undone.`);
+    `Reset ${CURRENT_PROFILE}?\n\nThis permanently wipes ${CURRENT_PROFILE}'s positions, ` +
+    `trades, equity history, decisions and hourly reports, and restarts its balance at ` +
+    `$${bal.toFixed(0)}.\n\nOnly ${CURRENT_PROFILE} is affected — the other bots are ` +
+    `untouched. Its strategy parameters are kept. This cannot be undone.`);
   if (!ok) return;
   const b = $("btnReset"); b.textContent = "Resetting…"; b.disabled = true;
   try {
@@ -359,7 +374,9 @@ document.querySelectorAll(".tab").forEach((t) =>
 // ---- EXPORT ----
 // Full snapshot: navigating to the endpoint triggers a file download (the
 // server sets Content-Disposition). The browser reuses the session's auth.
-$("btnExport").onclick = () => { window.location.href = "/api/export"; };
+$("btnExport").onclick = () => {
+  window.location.href = "/api/export?profile=" + encodeURIComponent(CURRENT_PROFILE);
+};
 
 // CSV of whatever tab is showing — fetched fresh, built client-side.
 function toCsv(rows, cols) {
@@ -417,10 +434,39 @@ $("btnTheme").onclick = () => {
   drawEquity();  // repaint the canvas with the new palette
 };
 
+// ---- PROFILE SWITCH (4 independent bots) ----
+function renderProfileSwitch(profiles) {
+  const names = profiles.map((p) => p.name);
+  if (!names.includes(CURRENT_PROFILE)) CURRENT_PROFILE = names[0] || "Kaladin";
+  const nav = $("profileSwitch");
+  nav.innerHTML = profiles.map((p) => {
+    const active = p.name === CURRENT_PROFILE ? " active" : "";
+    const pnl = (p.pnl_pct == null) ? "—" : `${p.pnl_pct >= 0 ? "+" : ""}${p.pnl_pct.toFixed(2)}%`;
+    const pnlCls = p.pnl_pct == null ? "" : (p.pnl_pct > 0 ? " pos" : p.pnl_pct < 0 ? " neg" : "");
+    return `<button class="profile-btn${active}" data-profile="${p.name}" title="${esc(p.blurb)}">
+      <span class="pf-name"><i class="pf-dot ${p.status}"></i>${p.name}</span>
+      <span class="pf-pnl${pnlCls}">${pnl}</span>
+    </button>`;
+  }).join("");
+  nav.querySelectorAll(".profile-btn").forEach((b) =>
+    b.onclick = () => switchProfile(b.dataset.profile));
+}
+async function loadProfiles() {
+  try { renderProfileSwitch(await api("/api/profiles")); } catch (e) { /* transient */ }
+}
+function switchProfile(name) {
+  if (name === CURRENT_PROFILE) return;
+  CURRENT_PROFILE = name;
+  try { localStorage.setItem("tradebot-profile", name); } catch (e) {}
+  // reload every panel for the newly selected bot
+  loadProfiles(); refresh(); loadSettings();
+  loadTrades(); loadDecisions(); loadEquity(); loadReports();
+}
+
 // ---- INIT + POLL ----
 function tickSlow() { loadTrades(); loadDecisions(); loadEquity(); loadReports(); }
-tickClock(); refresh(); loadSettings(); tickSlow();
+tickClock(); loadProfiles(); refresh(); loadSettings(); tickSlow();
 setInterval(tickClock, 1000);
-setInterval(refresh, 4000);
+setInterval(() => { refresh(); loadProfiles(); }, 4000);
 setInterval(tickSlow, 8000);
 window.addEventListener("resize", drawEquity);

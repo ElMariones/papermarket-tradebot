@@ -200,18 +200,122 @@ DEFAULT_SETTINGS = {
 }
 
 
+# --------------------------------------------------------------------------
+# Profiles — four independent bots, each its own portfolio + strategy.
+# Everything in the engine is already keyed by portfolio_name, so a "profile"
+# IS a named portfolio: its own money, settings, trades, decisions, equity
+# curve, hourly reports, agent loop and reset. The four start from distinct
+# strategy presets (all fully editable per-profile in the dashboard).
+# --------------------------------------------------------------------------
+
+PROFILES = ["Kaladin", "Adolin", "Dalinar", "Renarin"]
+
+PROFILE_META = {
+    # Kaladin — balanced strong-favorite harvester (the tuned baseline).
+    "Kaladin": {
+        "start_balance": 250.0,
+        "blurb": "Balanced — strong favorites, hold to resolution.",
+        "settings": {
+            "fav_low": 0.80, "fav_high": 0.96, "max_entry_price": 0.97,
+            "risk_per_trade_pct": 0.05, "max_concurrent_positions": 12,
+            "confidence_threshold": 0.55, "scan_interval_sec": 60,
+            "markets_per_scan": 60, "min_volume24h": 5000.0, "min_book_usd": 50.0,
+            "max_spread": 0.06, "take_profit_pct": 0.20, "stop_loss_pct": 0.40,
+            "stop_loss_price": 0.50,
+        },
+    },
+    # Adolin — aggressive, wide net: more positions, lower bar, bigger size.
+    "Adolin": {
+        "start_balance": 250.0,
+        "blurb": "Aggressive — wide band, many positions, bigger size.",
+        "settings": {
+            "fav_low": 0.70, "fav_high": 0.97, "max_entry_price": 0.97,
+            "risk_per_trade_pct": 0.08, "max_concurrent_positions": 20,
+            "confidence_threshold": 0.50, "scan_interval_sec": 45,
+            "markets_per_scan": 80, "min_volume24h": 3000.0, "min_book_usd": 40.0,
+            "max_spread": 0.08, "take_profit_pct": 0.25, "stop_loss_pct": 0.45,
+            "stop_loss_price": 0.45,
+        },
+    },
+    # Dalinar — conservative: only deep favorites, tight liquidity, small size.
+    "Dalinar": {
+        "start_balance": 500.0,
+        "blurb": "Conservative — deep favorites only, tight liquidity.",
+        "settings": {
+            "fav_low": 0.88, "fav_high": 0.97, "max_entry_price": 0.98,
+            "risk_per_trade_pct": 0.03, "max_concurrent_positions": 8,
+            "confidence_threshold": 0.65, "scan_interval_sec": 90,
+            "markets_per_scan": 50, "min_volume24h": 20000.0, "min_book_usd": 200.0,
+            "max_spread": 0.03, "take_profit_pct": 0.15, "stop_loss_pct": 0.50,
+            "stop_loss_price": 0.60,
+        },
+    },
+    # Renarin — nimble mid-band fader: smaller, faster, quicker profit-taking.
+    "Renarin": {
+        "start_balance": 150.0,
+        "blurb": "Nimble — mid-band favorites, fast scan, quick profits.",
+        "settings": {
+            "fav_low": 0.75, "fav_high": 0.90, "max_entry_price": 0.93,
+            "risk_per_trade_pct": 0.04, "max_concurrent_positions": 10,
+            "confidence_threshold": 0.55, "scan_interval_sec": 45,
+            "markets_per_scan": 70, "min_volume24h": 5000.0, "min_book_usd": 60.0,
+            "max_spread": 0.05, "take_profit_pct": 0.18, "stop_loss_pct": 0.35,
+            "stop_loss_price": 0.45,
+        },
+    },
+}
+
+
+def resolve_profile(name: str | None) -> str:
+    """Normalize an incoming profile name to a known one (default = first)."""
+    return name if name in PROFILES else PROFILES[0]
+
+
+def _defaults_for(name: str) -> dict:
+    """Default strategy for a profile = global defaults + the profile's preset."""
+    preset = PROFILE_META.get(name, {}).get("settings", {})
+    return {**DEFAULT_SETTINGS, **preset}
+
+
+def start_balance_for(name: str) -> float:
+    return float(PROFILE_META.get(name, {}).get("start_balance",
+                 os.environ.get("TRADEBOT_START_BALANCE", "200")))
+
+
 def get_settings(name: str = "default") -> dict:
+    base = _defaults_for(name)
     conn = _conn()
     try:
         row = conn.execute(
             "SELECT config FROM agent_settings WHERE portfolio_name = ?", (name,)
         ).fetchone()
         if row:
-            cfg = {**DEFAULT_SETTINGS, **json.loads(row["config"])}
-            return cfg
-        return dict(DEFAULT_SETTINGS)
+            return {**base, **json.loads(row["config"])}
+        return dict(base)
     finally:
         conn.close()
+
+
+def get_profiles_overview() -> list[dict]:
+    """Lightweight per-profile status for the dashboard selector (no live
+    price refresh — the active profile's main view handles mark-to-market)."""
+    out = []
+    for name in PROFILES:
+        meta = PROFILE_META.get(name, {})
+        try:
+            s = compute_summary(name, refresh=False)
+            pf = s["portfolio"]
+            out.append({
+                "name": name, "blurb": meta.get("blurb", ""),
+                "status": s["agent"]["status"], "cycles": s["agent"].get("cycles", 0),
+                "total_value": pf["total_value"], "pnl_pct": pf["pnl_pct"],
+                "num_positions": pf["num_open_positions"],
+            })
+        except Exception:
+            out.append({"name": name, "blurb": meta.get("blurb", ""),
+                        "status": "stopped", "cycles": 0,
+                        "total_value": None, "pnl_pct": None, "num_positions": 0})
+    return out
 
 
 def save_settings(name: str, updates: dict) -> dict:
@@ -538,7 +642,7 @@ def reset_all(name: str = "default", balance: float | None = None,
     tuning, not data). Returns the fresh portfolio state.
     """
     if balance is None:
-        balance = float(os.environ.get("TRADEBOT_START_BALANCE", "200"))
+        balance = start_balance_for(name)
     if balance <= 0:
         raise ValueError("Reset balance must be positive")
 

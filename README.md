@@ -39,6 +39,16 @@ immediately, or **Pause / Stop** to halt.
 
 ---
 
+## Profiles — four independent bots
+
+The dashboard runs **four separate bots** — **Kaladin**, **Adolin**, **Dalinar**,
+and **Renarin** — selectable from the top bar. Each is a fully independent
+portfolio: its own money, strategy parameters, open positions, trade history,
+reasoning log, equity curve, exports, and start/pause/stop state. They share
+nothing, run their own agent loops in parallel, and **resetting one wipes only
+that bot.** Each starts from a distinct strategy preset (balanced, aggressive,
+conservative, nimble) that you can edit live per profile.
+
 ## How it works
 
 Each agent cycle does three things:
