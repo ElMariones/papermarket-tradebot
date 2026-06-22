@@ -52,24 +52,41 @@ def _parse_market(m: dict) -> dict | None:
     }
 
 
+# The Gamma API caps a single /markets response at 100 rows, so a profile that
+# wants to scan deeper into the volume-ranked list (e.g. a category-filtered
+# profile that needs to see past the hot single-match sports into elections /
+# tournament outrights) must page through with offset.
+_GAMMA_PAGE = 100
+
+
 def fetch_active_markets(limit: int = 40, order: str = "volume24hr") -> list[dict]:
     """
     Fetch the top active, open markets by a given ordering (default 24h volume).
+    Pages through the Gamma API (100/page) until `limit` markets are collected.
     Returns normalized market dicts.
     """
-    params = {
-        "limit": limit,
-        "active": "true",
-        "closed": "false",
-        "order": order,
-        "ascending": "false",
-    }
-    raw = api_get(f"{GAMMA_API}/markets?{urlencode(params)}")
-    out = []
-    for m in raw if isinstance(raw, list) else []:
-        parsed = _parse_market(m)
-        if parsed:
-            out.append(parsed)
+    out: list[dict] = []
+    offset = 0
+    while len(out) < limit:
+        params = {
+            "limit": min(_GAMMA_PAGE, limit - len(out)),
+            "offset": offset,
+            "active": "true",
+            "closed": "false",
+            "order": order,
+            "ascending": "false",
+        }
+        raw = api_get(f"{GAMMA_API}/markets?{urlencode(params)}")
+        page = raw if isinstance(raw, list) else []
+        if not page:
+            break  # no more markets available
+        for m in page:
+            parsed = _parse_market(m)
+            if parsed:
+                out.append(parsed)
+        if len(page) < params["limit"]:
+            break  # last page (server returned fewer than asked)
+        offset += len(page)
     return out
 
 

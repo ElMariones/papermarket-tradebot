@@ -197,6 +197,11 @@ DEFAULT_SETTINGS = {
     "resolve_hi": 0.99,            # our side priced >= this => treat as won, settle 1.0
     "resolve_lo": 0.01,            # our side priced <= this => treat as lost, settle 0.0
     "reentry_cooldown_min": 180,   # don't re-enter a market we just exited (min)
+    # category filter: list of market-class tags to skip entirely (see
+    # strategy.classify_market). Empty = trade everything. Tags: "inplay",
+    # "single_match". Enabled on some profiles after log analysis showed
+    # single-match/in-play sports caused ~all of the net loss.
+    "exclude_categories": [],
 }
 
 
@@ -211,30 +216,44 @@ DEFAULT_SETTINGS = {
 PROFILES = ["Kaladin", "Adolin", "Dalinar", "Renarin"]
 
 PROFILE_META = {
-    # Kaladin — balanced strong-favorite harvester (the tuned baseline).
+    # Kaladin — balanced harvester, now NO single-match/in-play sports.
+    # Filtered twin of the tuned baseline: trades only markets that converge by
+    # resolution (elections, "out by DATE", tournament outrights). See log
+    # analysis — single-match/in-play sports were the whole net loss.
     "Kaladin": {
         "start_balance": 200.0,
-        "blurb": "Balanced — strong favorites, hold to resolution.",
+        "blurb": "Balanced, no single-match/in-play sports — convergence only.",
         "settings": {
             "fav_low": 0.80, "fav_high": 0.96, "max_entry_price": 0.97,
             "risk_per_trade_pct": 0.05, "max_concurrent_positions": 12,
             "confidence_threshold": 0.55, "scan_interval_sec": 60,
-            "markets_per_scan": 60, "min_volume24h": 5000.0, "min_book_usd": 50.0,
+            # Scans deep (250) so non-sports convergence markets surface below
+            # the hot single-match sports the filter drops; the category gate
+            # short-circuits excluded markets before any order-book fetch, so
+            # the extra depth is cheap.
+            "markets_per_scan": 250, "min_volume24h": 5000.0, "min_book_usd": 50.0,
             "max_spread": 0.06, "take_profit_pct": 0.20, "stop_loss_pct": 0.40,
             "stop_loss_price": 0.50,
+            "exclude_categories": ["inplay", "single_match"],
         },
     },
-    # Adolin — aggressive, wide net: more positions, lower bar, bigger size.
+    # Adolin — aggressive, wide net, but NO single-match/in-play sports.
+    # It took the worst soccer damage in the logs (Uruguay-halftime -$15,
+    # Egypt-moneyline -$13); the in-play exclusion removes exactly that tail
+    # while keeping the wide-band aggression on convergence markets.
     "Adolin": {
         "start_balance": 200.0,
-        "blurb": "Aggressive — wide band, many positions, bigger size.",
+        "blurb": "Aggressive, no single-match/in-play sports — wide band, convergence only.",
         "settings": {
             "fav_low": 0.70, "fav_high": 0.97, "max_entry_price": 0.97,
             "risk_per_trade_pct": 0.08, "max_concurrent_positions": 20,
             "confidence_threshold": 0.50, "scan_interval_sec": 45,
-            "markets_per_scan": 80, "min_volume24h": 3000.0, "min_book_usd": 40.0,
+            # Aggressive + filtered: scans the deepest (300) to feed its wide
+            # band and high position count from the convergence-only universe.
+            "markets_per_scan": 300, "min_volume24h": 3000.0, "min_book_usd": 40.0,
             "max_spread": 0.08, "take_profit_pct": 0.25, "stop_loss_pct": 0.45,
             "stop_loss_price": 0.45,
+            "exclude_categories": ["inplay", "single_match"],
         },
     },
     # Dalinar — conservative: only deep favorites, tight liquidity, small size.

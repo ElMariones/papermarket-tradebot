@@ -22,7 +22,60 @@ It never touches the ledger; the agent loop executes whatever it returns.
 
 from __future__ import annotations
 
+import re
+
 from engine import fetch_orderbook
+
+
+# --------------------------------------------------------------------------
+# Market classification — used by the optional `exclude_categories` filter.
+#
+# Log analysis (logs/, 4 profiles, 2026-06-22) showed the entire net loss came
+# from single-match and live in-play sports markets, while markets that resolve
+# by clean convergence (elections, multi-day "out by" markets, tournament
+# outrights) were profitable:
+#
+#   inplay (halftime/period)        -38.70   4 trades    0% win   <- worst
+#   single-match moneyline          -33.24  21 trades   57% win
+#   single-match spread/totals/draw  -6.43  73 trades   77% win
+#   politics / macro                +29.66  17 trades  100% win
+#   tournament outright (golf)      +10.63   4 trades  100% win
+#
+# The favorite-longshot edge is real but needs the price to *converge* to the
+# resolved value. A single soccer/tennis match (esp. live) is high-variance:
+# a 0.85 favorite can crater to 0.02 on one goal, blowing through the stop.
+# These two structural tags let a profile opt out of that whole class. The tags
+# are sport-agnostic, so they also catch the in-play tennis loss from the
+# earlier run (the Sabalenka book-404 episode in TRADING_ANALYSIS.md).
+# --------------------------------------------------------------------------
+
+_INPLAY_MARKERS = (
+    "leading at halftime", "at halftime", "1st half", "2nd half", "first half",
+    "second half", "at the half", "halftime", "leading after", "in-game",
+)
+_EVENT_STRUCT = (
+    "spread:", ": o/u", " o/u ", "o/u ", "both teams to score",
+    "end in a draw", "to draw", "clean sheet",
+)
+_DAILY_MONEYLINE = re.compile(r"win on \d{4}-\d{2}-\d{2}")
+
+
+def classify_market(question: str) -> set[str]:
+    """Tag a market by structure. Returns any of {"inplay", "single_match"}.
+
+    A profile can list either tag in its `exclude_categories` setting to skip
+    that whole class of market. Markets with no tag (elections, "out by DATE",
+    tournament outrights, price markets) are left untouched.
+    """
+    s = (question or "").lower()
+    tags: set[str] = set()
+    if any(k in s for k in _INPLAY_MARKERS):
+        tags.add("inplay")
+    if (any(k in s for k in _EVENT_STRUCT)
+            or _DAILY_MONEYLINE.search(s)
+            or " vs. " in s or " vs " in s):
+        tags.add("single_match")
+    return tags
 
 
 def _book_depth_usd(levels: list[dict]) -> float:
@@ -77,6 +130,16 @@ def evaluate_market(market: dict, settings: dict, portfolio: dict) -> dict:
     # --- skip closed / degenerate markets ---
     if market.get("closed") or yes_price <= 0 or yes_price >= 1:
         return decision("PASS", reason=f"Closed or degenerate pricing (YES={yes_price}).")
+
+    # --- category gate: opt out of money-losing market classes (per profile) ---
+    excluded = set(settings.get("exclude_categories") or [])
+    if excluded:
+        hit = classify_market(q) & excluded
+        if hit:
+            return decision("PASS", reason=(
+                f"Excluded market class {sorted(hit)} — this profile does not "
+                f"trade single-match/in-play sports (high variance, net loss in "
+                f"log analysis)."))
 
     # --- liquidity gate 1: 24h volume ---
     if vol24 < settings["min_volume24h"]:
