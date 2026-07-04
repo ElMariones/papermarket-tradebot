@@ -446,6 +446,12 @@ def claim_legacy_bots(user_id: int, username: str) -> list[str]:
             if not row:
                 continue
             new = portfolio_name_for(username, bot)
+            # never rename onto an existing portfolio — if the admin already
+            # has this bot, the unowned one is a duplicate artifact and gets
+            # retired by the migration sweep instead
+            if conn.execute("SELECT 1 FROM portfolios WHERE name = ? AND active = 1",
+                            (new,)).fetchone():
+                continue
             # rename every generation of the portfolio (active + reset history)
             conn.execute(
                 "UPDATE portfolios SET name = ?, owner_user_id = ?, "
@@ -485,6 +491,21 @@ def migrate_to_per_user_bots() -> None:
     if admin:
         for name in claim_legacy_bots(admin["id"], admin["username"]):
             print(f"Claimed legacy bot as {name}")
+    if users:
+        # Any unowned plain-named set still active once accounts exist is a
+        # deploy-race artifact (old code re-creating the demo set after the
+        # admin claimed the original — the "house bots" duplicate). The claim
+        # above already rescued anything claimable; retire the rest.
+        conn = _conn()
+        try:
+            cur = conn.execute(
+                "UPDATE portfolios SET active = 0 "
+                "WHERE owner_user_id IS NULL AND active = 1")
+            conn.commit()
+            if cur.rowcount:
+                print(f"Retired {cur.rowcount} orphaned unowned demo portfolio(s)")
+        finally:
+            conn.close()
     for u in users:
         for name in create_user_bots(u["username"], u["id"]):
             print(f"Created {name} (stopped)")
