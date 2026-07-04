@@ -243,6 +243,28 @@ def _active_portfolio(conn: sqlite3.Connection, name: str = "default") -> dict:
     return dict(row)
 
 
+def _fetch_midpoints(token_ids: list[str]) -> dict[str, float]:
+    """Fetch live midpoints for many tokens in parallel. A portfolio can hold
+    a dozen positions; fetching sequentially meant one HTTP round trip per
+    position (seconds of latency on every live-priced portfolio read)."""
+    out: dict[str, float] = {}
+    if not token_ids:
+        return out
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(t):
+        try:
+            return t, fetch_midpoint(t)
+        except Exception:
+            return t, None  # keep stale price
+
+    with ThreadPoolExecutor(max_workers=min(8, len(token_ids))) as ex:
+        for t, px in ex.map(one, token_ids):
+            if px is not None:
+                out[t] = px
+    return out
+
+
 def get_portfolio(name: str = "default", refresh_prices: bool = True) -> dict:
     """Return the current portfolio state with live-priced positions."""
     conn = _get_db()
@@ -255,20 +277,20 @@ def get_portfolio(name: str = "default", refresh_prices: bool = True) -> dict:
             (pid,),
         ).fetchall()
 
+        live = _fetch_midpoints(
+            [p["token_id"] for p in positions]) if refresh_prices else {}
+
         pos_list = []
         positions_value = 0.0
         for p in positions:
             p = dict(p)
-            if refresh_prices:
-                try:
-                    p["current_price"] = fetch_midpoint(p["token_id"])
-                    conn.execute(
-                        "UPDATE positions SET current_price = ?, updated_at = ? WHERE id = ?",
-                        (p["current_price"],
-                         datetime.now(timezone.utc).isoformat(), p["id"]),
-                    )
-                except Exception:
-                    pass  # keep stale price
+            if p["token_id"] in live:
+                p["current_price"] = live[p["token_id"]]
+                conn.execute(
+                    "UPDATE positions SET current_price = ?, updated_at = ? WHERE id = ?",
+                    (p["current_price"],
+                     datetime.now(timezone.utc).isoformat(), p["id"]),
+                )
             value = p["shares"] * p["current_price"]
             unrealized_pnl = (p["current_price"] - p["avg_entry"]) * p["shares"]
             pos_list.append({

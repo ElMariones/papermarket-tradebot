@@ -84,15 +84,48 @@ function applyPermissions() {
 }
 document.addEventListener("auth-ready", () => { loadProfiles(); applyPermissions(); });
 
-async function refresh() {
+// ---- VIEW EPOCH ----
+// Bumped on every bot switch. Every async loader captures the epoch before
+// its request and drops the response if the user has switched away since —
+// otherwise a slow in-flight reply for the PREVIOUS bot lands after the
+// switch and repaints the old bot's money over the new one.
+let VIEW_EPOCH = 0;
+const stale = (epoch) => epoch !== VIEW_EPOCH;
+
+async function refresh(fastFirst = false) {
+  const epoch = VIEW_EPOCH;
   try {
-    const s = await api("/api/summary");
+    // fastFirst: paint instantly from the last stored marks (no per-position
+    // CLOB fetch server-side), then follow up with live prices.
+    const s = await api("/api/summary" + (fastFirst ? "?refresh=0" : ""));
+    if (stale(epoch)) return;
     renderHeadline(s);
     renderAgent(s.agent);
     renderPositions(s.portfolio.positions);
     $("lastUpdate").textContent = "Updated " + clockFmt(new Date()) +
       (s.agent.cycles ? " · " + s.agent.cycles + " cycles" : "");
   } catch (e) { /* transient */ }
+  if (fastFirst && !stale(epoch)) refresh(false);
+}
+
+// Wipe every number/table the moment the user switches bots, so the old
+// bot's figures never linger while the new bot's data loads.
+function clearView() {
+  ["totalValue", "cash", "winRate", "openPos"].forEach((id) => { $(id).textContent = "—"; });
+  ["realizedPnl", "unrealizedPnl"].forEach((id) => {
+    const el = $(id); el.textContent = "—"; el.className = "card-value muted";
+  });
+  const tp = $("totalPnl"); tp.textContent = "—"; tp.className = "card-delta muted";
+  $("tradeCount").textContent = "—"; $("drawdown").textContent = "—";
+  $("posCount").textContent = ""; $("expLabel").textContent = "—";
+  $("expBar").style.width = "0%";
+  const loading = (id, cols) => {
+    $(id).querySelector("tbody").innerHTML =
+      `<tr><td colspan="${cols}" class="empty">Loading…</td></tr>`;
+  };
+  loading("posTable", 8); loading("tradesTable", 8);
+  loading("decisionsTable", 6); loading("reportsTable", 8);
+  equityData = []; drawEquity();
 }
 
 // Live local-time clock in the top bar.
@@ -167,7 +200,9 @@ function renderPositions(positions) {
 }
 
 async function loadTrades() {
+  const epoch = VIEW_EPOCH;
   const t = await api("/api/trades?limit=200");
+  if (stale(epoch)) return;
   const tb = $("tradesTable").querySelector("tbody");
   if (!t.length) { tb.innerHTML = `<tr><td colspan="8" class="empty">No trades yet.</td></tr>`; return; }
   tb.innerHTML = t.map((r) => {
@@ -196,7 +231,9 @@ async function loadTrades() {
 }
 
 async function loadDecisions() {
+  const epoch = VIEW_EPOCH;
   const d = await api("/api/decisions?limit=120");
+  if (stale(epoch)) return;
   const tb = $("decisionsTable").querySelector("tbody");
   if (!d.length) { tb.innerHTML = `<tr><td colspan="6" class="empty">No decisions logged.</td></tr>`; return; }
   tb.innerHTML = d.map((r) => `
@@ -211,7 +248,9 @@ async function loadDecisions() {
 }
 
 async function loadReports() {
+  const epoch = VIEW_EPOCH;
   const d = await api("/api/reports?limit=168");
+  if (stale(epoch)) return;
   const tb = $("reportsTable").querySelector("tbody");
   if (!d.length) {
     tb.innerHTML = `<tr><td colspan="8" class="empty">No hourly reports yet — one is saved automatically every hour (and to the server logs).</td></tr>`;
@@ -232,7 +271,10 @@ async function loadReports() {
 
 // ---- EQUITY CHART (hand-rolled canvas) ----
 async function loadEquity() {
-  equityData = await api("/api/equity");
+  const epoch = VIEW_EPOCH;
+  const data = await api("/api/equity");
+  if (stale(epoch)) return;
+  equityData = data;
   drawEquity();
 }
 function cssVar(name, fallback) {
@@ -308,7 +350,9 @@ function renderCapacity() {
   if ($("capScan")) $("capScan").textContent = SETTINGS.markets_per_scan ?? "—";
 }
 async function loadSettings() {
+  const epoch = VIEW_EPOCH;
   const s = await api("/api/settings");
+  if (stale(epoch)) return;
   SETTINGS = s;
   const f = $("settingsForm");
   f.innerHTML = SETTING_FIELDS.map(([k, label, step]) => `
@@ -528,22 +572,29 @@ function renderProfileSwitch(profiles) {
     b.onclick = () => switchProfile(b.dataset.profile));
   applyPermissions();
 }
+let LAST_PROFILES = [];
 async function loadProfiles() {
-  try { renderProfileSwitch(await api("/api/profiles")); } catch (e) { /* transient */ }
+  try {
+    LAST_PROFILES = await api("/api/profiles");
+    renderProfileSwitch(LAST_PROFILES);
+  } catch (e) { /* transient */ }
 }
 function switchProfile(name) {
   if (name === CURRENT_PROFILE) return;
   CURRENT_PROFILE = name;
   try { localStorage.setItem("tradebot-profile", name); } catch (e) {}
-  // reload every panel for the newly selected portfolio
-  loadProfiles(); refresh(); loadSettings();
-  loadTrades(); loadDecisions(); loadEquity(); loadReports();
+  VIEW_EPOCH++;        // invalidate every in-flight response for the old bot
+  clearView();         // no stale money on screen while the new bot loads
+  if (LAST_PROFILES.length) renderProfileSwitch(LAST_PROFILES); // instant tab highlight
   applyPermissions();
+  // fast summary first (stored marks, instant), live-priced follow-up after
+  refresh(true); loadSettings();
+  loadTrades(); loadDecisions(); loadEquity(); loadReports();
 }
 
 // ---- INIT + POLL ----
 function tickSlow() { loadTrades(); loadDecisions(); loadEquity(); loadReports(); }
-tickClock(); loadProfiles(); refresh(); loadSettings(); tickSlow();
+tickClock(); loadProfiles(); refresh(true); loadSettings(); tickSlow();
 setInterval(tickClock, 1000);
 setInterval(() => { refresh(); loadProfiles(); }, 4000);
 setInterval(tickSlow, 8000);

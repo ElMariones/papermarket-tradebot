@@ -230,7 +230,12 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/agent":
                 return self._send_json(engine.get_agent_state(pf))
             if path == "/api/summary":
-                return self._send_json(engine.compute_summary(pf))
+                # refresh=0 -> serve instantly from the last stored marks
+                # (the dashboard paints this first, then follows up with a
+                # live-priced refresh) instead of hitting the CLOB per
+                # position before responding.
+                live = qs.get("refresh", ["1"])[0] not in ("0", "false")
+                return self._send_json(engine.compute_summary(pf, refresh=live))
             if path == "/api/reports":
                 limit = int(qs.get("limit", ["168"])[0])
                 return self._send_json(engine.get_hourly_reports(pf, limit))

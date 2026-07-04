@@ -47,6 +47,10 @@ async function loadProfilesAndTarget() {
       `${esc(p.owner || "house")} · ${esc(p.bot)}</option>`).join("");
     $("targetSelect").onchange = () => {
       TARGET = $("targetSelect").value;
+      $("mineTitle").textContent = `Bot portfolio — ${TARGET}`;
+      $("mineSummary").textContent = "";
+      $("minePosTable").querySelector("tbody").innerHTML =
+        `<tr><td colspan="7" class="empty">Loading…</td></tr>`;
       loadMine(); renderMarkets();
     };
   } else {
@@ -58,6 +62,7 @@ async function loadProfilesAndTarget() {
 }
 
 async function loadMine() {
+  const target = TARGET;  // drop the response if the user retargets mid-flight
   const tb = $("minePosTable").querySelector("tbody");
   if (!TARGET) {
     $("mineSummary").textContent = "";
@@ -67,6 +72,7 @@ async function loadMine() {
   try {
     const pf = await (await fetch(
       "/api/portfolio?profile=" + encodeURIComponent(TARGET))).json();
+    if (target !== TARGET) return;
     $("mineSummary").textContent =
       `${money(pf.total_value)} total · ${money(pf.cash_balance)} cash · ` +
       `${pf.num_open_positions} open`;
