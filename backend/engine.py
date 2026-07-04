@@ -238,14 +238,33 @@ DEFAULT_SETTINGS = {
 
 
 # --------------------------------------------------------------------------
-# Profiles — four independent bots, each its own portfolio + strategy.
-# Everything in the engine is already keyed by portfolio_name, so a "profile"
-# IS a named portfolio: its own money, settings, trades, decisions, equity
-# curve, hourly reports, agent loop and reset. The four start from distinct
-# strategy presets (all fully editable per-profile in the dashboard).
+# Bots — the four bot identities: Kaladin, Adolin, Dalinar, Renarin.
+#
+# EVERY ACCOUNT OWNS ITS OWN COPY OF ALL FOUR. A portfolio is one user's copy
+# of one bot, named "<username>:<Bot>" (e.g. "mario:Kaladin"), with its own
+# money, editable strategy settings, agent loop, trades, logs and reset.
+# Sara can make her Dalinar aggressive and fund it with $50 without touching
+# Mario's Dalinar. Four accounts = sixteen independently running bots.
+#
+# Everything in the engine is keyed by portfolio name, so this composes for
+# free: each (user, bot) pair is just a distinct portfolio_name. The presets
+# below are per bot IDENTITY — the starting point every user's copy begins
+# from. Plain unprefixed names ("Kaladin") exist only on a fresh install with
+# no accounts (demo mode); the first admin account claims them, history and
+# all, and they become that admin's set.
 # --------------------------------------------------------------------------
 
-PROFILES = ["Kaladin", "Adolin", "Dalinar", "Renarin"]
+PROFILES = ["Kaladin", "Adolin", "Dalinar", "Renarin"]  # bot identities
+
+
+def bot_identity(portfolio_name: str) -> str:
+    """'mario:Kaladin' -> 'Kaladin'; legacy plain 'Kaladin' -> itself."""
+    bot = portfolio_name.split(":", 1)[1] if ":" in portfolio_name else portfolio_name
+    return bot if bot in PROFILES else PROFILES[0]
+
+
+def portfolio_name_for(username: str, bot: str) -> str:
+    return f"{username}:{bot}"
 
 PROFILE_META = {
     # Kaladin — balanced harvester, now NO single-match/in-play sports.
@@ -317,27 +336,27 @@ PROFILE_META = {
 }
 
 
-def resolve_profile(name: str | None) -> str:
-    """Normalize an incoming profile name to a known one (default = first).
-    Accepts the four bot profiles and any user-owned personal portfolio."""
-    if name in PROFILES:
-        return name
-    if name and name in user_portfolio_names():
-        return name
-    return PROFILES[0]
-
-
-def user_portfolio_names() -> list[str]:
-    """Names of active user-owned (manual) portfolios."""
+def active_bot_names() -> list[str]:
+    """Names of every active bot portfolio (all users' copies + any
+    unclaimed demo set), in creation order."""
     conn = _conn()
     try:
         rows = conn.execute(
-            "SELECT name FROM portfolios WHERE owner_type = 'user' AND active = 1 "
-            "ORDER BY id"
+            "SELECT name FROM portfolios WHERE active = 1 ORDER BY id"
         ).fetchall()
         return [r["name"] for r in rows]
     finally:
         conn.close()
+
+
+def resolve_profile(name: str | None) -> str:
+    """Normalize an incoming portfolio name to an existing one.
+    Default = the first active portfolio (the original Kaladin — or, after
+    it's claimed, the admin's Kaladin)."""
+    names = active_bot_names()
+    if name in names:
+        return name
+    return names[0] if names else PROFILES[0]
 
 
 def portfolio_owner(name: str) -> dict:
@@ -356,39 +375,131 @@ def portfolio_owner(name: str) -> dict:
         conn.close()
 
 
-def create_user_portfolio(username: str, user_id: int,
-                          balance: float | None = None) -> dict:
-    """
-    Create the personal (manual) portfolio for a user account. Behaves like a
-    bot profile minus the agent loop: it changes only via manual trades on the
-    Markets page, Funds, or Reset. Named after the user.
-    """
-    if portfolio_exists(username):
-        raise ValueError(f"Portfolio '{username}' already exists")
+def _risk_for(settings: dict) -> dict:
+    """Hard risk caps derived from a bot's strategy settings (same shape the
+    server has always used when creating the four demo bots)."""
+    return {
+        "max_position_pct": max(0.05, float(settings["risk_per_trade_pct"])),
+        "max_concurrent_positions": int(settings["max_concurrent_positions"]),
+        "max_single_market_pct": 0.10, "daily_loss_limit_pct": 0.05,
+        "max_drawdown_pct": 0.30, "human_approval_pct": 0.20,
+    }
+
+
+def create_bot_for_user(username: str, user_id: int, bot: str,
+                        balance: float | None = None) -> dict:
+    """Create one user's copy of one bot, starting from that bot's preset,
+    stopped (it trades only when its owner presses Start)."""
+    name = portfolio_name_for(username, bot)
+    if portfolio_exists(name):
+        raise ValueError(f"Portfolio '{name}' already exists")
     if balance is None:
-        balance = float(os.environ.get("TRADEBOT_START_BALANCE", "200"))
-    pf = init_portfolio(balance, username, dict(DEFAULT_RISK))
+        balance = start_balance_for(name)
+    pf = init_portfolio(balance, name, _risk_for(_defaults_for(name)))
     conn = _conn()
     try:
         conn.execute(
-            "UPDATE portfolios SET owner_type = 'user', owner_user_id = ? "
+            "UPDATE portfolios SET owner_type = 'bot', owner_user_id = ? "
             "WHERE id = ?", (user_id, pf["portfolio_id"]),
         )
         conn.commit()
     finally:
         conn.close()
-    record_equity(username)  # seed the equity curve at the starting balance
+    save_settings(name, {})          # persist the preset + sync risk caps
+    set_agent_status(name, "stopped", message="created — press Start to trade")
+    record_equity(name)              # seed the equity curve
     return pf
 
 
+def create_user_bots(username: str, user_id: int,
+                     balance: float | None = None) -> list[str]:
+    """Create the user's full set of four bots (skipping any that exist)."""
+    made = []
+    for bot in PROFILES:
+        if not portfolio_exists(portfolio_name_for(username, bot)):
+            create_bot_for_user(username, user_id, bot, balance)
+            made.append(portfolio_name_for(username, bot))
+    return made
+
+
+# Tables keyed by portfolio NAME (portfolios itself is handled separately;
+# positions/trades/daily_snapshots key by portfolio_id and never need renames).
+_NAME_KEYED_TABLES = ("agent_settings", "agent_state", "equity_snapshots",
+                      "decisions", "hourly_reports")
+
+
+def claim_legacy_bots(user_id: int, username: str) -> list[str]:
+    """
+    Assign the original unowned demo set (plain 'Kaladin' ... names) to an
+    admin account, HISTORY AND ALL: renames every row keyed by the old name
+    to '<username>:<Bot>' and sets ownership. Idempotent — does nothing once
+    no unowned plain-named bots remain.
+    """
+    claimed = []
+    conn = _conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        for bot in PROFILES:
+            row = conn.execute(
+                "SELECT 1 FROM portfolios WHERE name = ? AND active = 1 "
+                "AND owner_user_id IS NULL", (bot,)).fetchone()
+            if not row:
+                continue
+            new = portfolio_name_for(username, bot)
+            # rename every generation of the portfolio (active + reset history)
+            conn.execute(
+                "UPDATE portfolios SET name = ?, owner_user_id = ?, "
+                "owner_type = 'bot' WHERE name = ?", (new, user_id, bot))
+            for tbl in _NAME_KEYED_TABLES:
+                conn.execute(
+                    f"UPDATE {tbl} SET portfolio_name = ? WHERE portfolio_name = ?",
+                    (new, bot))
+            claimed.append(new)
+        conn.commit()
+    finally:
+        conn.close()
+    return claimed
+
+
+def migrate_to_per_user_bots() -> None:
+    """
+    One-shot boot migration to the per-user-bot-sets model:
+      1. retire any personal manual portfolios from the short-lived
+         accounts-v1 design (deactivated, data kept)
+      2. claim the unowned demo set for the first admin, if one exists
+      3. make sure every account has its four bots (created stopped)
+    """
+    conn = _conn()
+    try:
+        conn.execute(
+            "UPDATE portfolios SET active = 0 "
+            "WHERE owner_type = 'user' AND active = 1")
+        conn.commit()
+        admin = conn.execute(
+            "SELECT id, username FROM users WHERE role = 'admin' "
+            "ORDER BY id LIMIT 1").fetchone()
+        users = conn.execute(
+            "SELECT id, username FROM users ORDER BY id").fetchall()
+    finally:
+        conn.close()
+    if admin:
+        for name in claim_legacy_bots(admin["id"], admin["username"]):
+            print(f"Claimed legacy bot as {name}")
+    for u in users:
+        for name in create_user_bots(u["username"], u["id"]):
+            print(f"Created {name} (stopped)")
+
+
 def _defaults_for(name: str) -> dict:
-    """Default strategy for a profile = global defaults + the profile's preset."""
-    preset = PROFILE_META.get(name, {}).get("settings", {})
+    """Default strategy for a portfolio = global defaults + the preset of its
+    bot IDENTITY ('sara:Dalinar' starts from Dalinar's preset). Each copy is
+    then edited independently via agent_settings."""
+    preset = PROFILE_META.get(bot_identity(name), {}).get("settings", {})
     return {**DEFAULT_SETTINGS, **preset}
 
 
 def start_balance_for(name: str) -> float:
-    return float(PROFILE_META.get(name, {}).get("start_balance",
+    return float(PROFILE_META.get(bot_identity(name), {}).get("start_balance",
                  os.environ.get("TRADEBOT_START_BALANCE", "200")))
 
 
@@ -409,35 +520,39 @@ def get_settings(name: str = "default") -> dict:
 def get_profiles_overview() -> list[dict]:
     """Lightweight per-portfolio status for the dashboard selector (no live
     price refresh — the active profile's main view handles mark-to-market).
-    Lists the four bots first, then every user's personal portfolio, with
-    ownership info so the frontend can label and gate controls."""
+    Every account's copy of every bot, grouped by owner (owners in account
+    order, bots in canonical order within each owner); an unclaimed demo set
+    sorts first with owner = null."""
     conn = _conn()
     try:
-        user_rows = conn.execute(
+        rows = conn.execute(
             """SELECT p.name, p.owner_user_id, u.username AS owner
                FROM portfolios p LEFT JOIN users u ON u.id = p.owner_user_id
-               WHERE p.owner_type = 'user' AND p.active = 1 ORDER BY p.id"""
+               WHERE p.active = 1 ORDER BY p.owner_user_id IS NOT NULL,
+                     p.owner_user_id, p.id"""
         ).fetchall()
     finally:
         conn.close()
 
-    entries = [(name, "bot", None, None) for name in PROFILES]
-    entries += [(r["name"], "user", r["owner_user_id"], r["owner"])
-                for r in user_rows]
+    def bot_order(r):
+        b = bot_identity(r["name"])
+        return PROFILES.index(b) if b in PROFILES else 99
 
+    grouped = sorted(rows, key=lambda r: (r["owner_user_id"] is not None,
+                                          r["owner_user_id"] or 0, bot_order(r)))
     out = []
-    for name, kind, owner_id, owner in entries:
-        meta = PROFILE_META.get(name, {})
-        blurb = meta.get("blurb", "" if kind == "bot" else
-                         f"{owner or name}'s manual portfolio — human trades only")
-        base = {"name": name, "kind": kind, "owner_user_id": owner_id,
-                "owner": owner, "blurb": blurb}
+    for r in grouped:
+        name = r["name"]
+        bot = bot_identity(name)
+        base = {"name": name, "bot": bot,
+                "owner_user_id": r["owner_user_id"], "owner": r["owner"],
+                "blurb": PROFILE_META.get(bot, {}).get("blurb", "")}
         try:
             s = compute_summary(name, refresh=False)
             pf = s["portfolio"]
             out.append({
                 **base,
-                "status": s["agent"]["status"] if kind == "bot" else "manual",
+                "status": s["agent"]["status"],
                 "cycles": s["agent"].get("cycles", 0),
                 "total_value": pf["total_value"], "pnl_pct": pf["pnl_pct"],
                 "num_positions": pf["num_open_positions"],
@@ -876,21 +991,20 @@ def reset_all(name: str = "default", balance: float | None = None,
         "max_drawdown_pct": 0.30, "human_approval_pct": 0.20,
     }
     pf_new = init_portfolio(balance, name, risk)
-    if owner["owner_type"] == "user":
+    if owner["owner_user_id"] is not None:
         conn = _conn()
         try:
             conn.execute(
-                "UPDATE portfolios SET owner_type = 'user', owner_user_id = ? "
-                "WHERE id = ?", (owner["owner_user_id"], pf_new["portfolio_id"]),
+                "UPDATE portfolios SET owner_type = ?, owner_user_id = ? "
+                "WHERE id = ?", (owner["owner_type"], owner["owner_user_id"],
+                                 pf_new["portfolio_id"]),
             )
             conn.commit()
         finally:
             conn.close()
     save_settings(name, {})  # re-sync risk_config with preserved settings
     record_equity(name)      # seed the new equity curve
-    # user portfolios have no agent loop, so never mark them 'running'
-    run = keep_running and owner["owner_type"] != "user"
-    set_agent_status(name, "running" if run else "stopped",
+    set_agent_status(name, "running" if keep_running else "stopped",
                      message="portfolio reset")
     return get_portfolio(name, refresh_prices=False)
 

@@ -35,7 +35,7 @@ import agent
 import auth
 import engine
 import strategy
-from polymarket_client import fetch_active_markets
+from polymarket_client import fetch_active_markets_cached
 
 # --- legacy access control ------------------------------------------------
 # Honored ONLY while no user accounts exist (one-release migration path).
@@ -138,7 +138,15 @@ class Handler(BaseHTTPRequestHandler):
             return None
 
     def _current_user(self) -> dict | None:
-        return auth.get_session_user(self._session_token())
+        user = auth.get_session_user(self._session_token())
+        if user:
+            return user
+        # Legacy single-password mode (no accounts yet): whoever passed the
+        # Basic Auth gate has full control, exactly like the old releases.
+        if self._legacy_gate_active() and self._legacy_authed():
+            return {"id": None, "username": AUTH_USER, "role": "admin",
+                    "legacy": True}
+        return None
 
     def _session_cookie_header(self, token: str, max_age: int) -> tuple[str, str]:
         parts = [
@@ -152,14 +160,14 @@ class Handler(BaseHTTPRequestHandler):
         return ("Set-Cookie", "; ".join(parts))
 
     def _can_control(self, user: dict | None, profile: str) -> bool:
-        """Admin: everything. User: only the portfolio they own. Spectator: nothing."""
+        """Admin: everything. User: only their own copies of the four bots.
+        Spectator: nothing."""
         if not user:
             return False
         if user["role"] == "admin":
             return True
-        owner = engine.portfolio_owner(profile)
-        return (owner["owner_type"] == "user"
-                and owner["owner_user_id"] == user["id"])
+        owner_id = engine.portfolio_owner(profile)["owner_user_id"]
+        return owner_id is not None and owner_id == user["id"]
 
     def _deny_control(self):
         """403 with the observer message — the frontend turns this into the
@@ -270,12 +278,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self._deny_control()
 
             if path.startswith("/api/agent/"):
-                # user portfolios have no autonomous loop — nothing to drive
-                if engine.portfolio_owner(pf)["owner_type"] == "user":
-                    return self._send_json(
-                        {"error": f"'{pf}' is a manual portfolio — it has no "
-                                  "agent loop to control. Trade it from the "
-                                  "Markets page."}, status=400)
                 if path == "/api/agent/start":
                     return self._send_json(agent.start(pf))
                 if path == "/api/agent/pause":
@@ -345,20 +347,15 @@ class Handler(BaseHTTPRequestHandler):
         return self._send_json({"user": None}, extra_headers=[hdr])
 
     def _auth_me(self):
-        user = self._current_user()
-        if not user:
-            return self._send_json({"user": None})
-        portfolios = [p for p in engine.user_portfolio_names()
-                      if engine.portfolio_owner(p)["owner_user_id"] == user["id"]]
-        return self._send_json({"user": {**user,
-                                         "portfolio": portfolios[0] if portfolios else None}})
+        return self._send_json({"user": self._current_user()})
 
     # --- markets (manual trading) -------------------------------------------
     def _markets_list(self, limit: int) -> dict:
         """The same live scan the bots run over (Gamma, top 24h volume),
         UNFILTERED — a human may want markets the bots skip. Each row carries
-        the baseline pre-book gate flags as a reference, not a restriction."""
-        markets = fetch_active_markets(limit=limit)
+        the baseline pre-book gate flags as a reference, not a restriction.
+        Served through the shared scan cache the bot loops use."""
+        markets = fetch_active_markets_cached(limit=limit)
         gates = engine.DEFAULT_SETTINGS
         out = []
         for m in markets:
@@ -417,25 +414,27 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
-def _ensure_profile(name: str) -> None:
-    """Create a profile's portfolio (with its preset strategy) if missing."""
-    if engine.portfolio_exists(name):
-        return
-    bal = engine.start_balance_for(name)
-    cfg = engine.get_settings(name)  # profile preset (merged over defaults)
-    engine.init_portfolio(bal, name, {
-        "max_position_pct": max(0.05, float(cfg["risk_per_trade_pct"])),
-        "max_concurrent_positions": int(cfg["max_concurrent_positions"]),
-        "max_single_market_pct": 0.10, "daily_loss_limit_pct": 0.05,
-        "max_drawdown_pct": 0.30, "human_approval_pct": 0.20,
-    })
-    engine.save_settings(name, {})  # persist the preset + sync hard risk caps
-    print(f"Initialized profile '{name}' with ${bal:,.2f}")
+def _ensure_demo_bots() -> None:
+    """Fresh install with no accounts: create the plain-named demo set so the
+    site has something to show. The first admin account claims these, history
+    and all (engine.claim_legacy_bots)."""
+    for name in engine.PROFILES:
+        if engine.portfolio_exists(name):
+            continue
+        bal = engine.start_balance_for(name)
+        engine.init_portfolio(bal, name,
+                              engine._risk_for(engine.get_settings(name)))
+        engine.save_settings(name, {})  # persist preset + sync hard risk caps
+        print(f"Initialized demo bot '{name}' with ${bal:,.2f}")
 
 
 def main():
-    for name in engine.PROFILES:
-        _ensure_profile(name)
+    # migrate first (retire personal portfolios, claim demo set for the first
+    # admin, ensure every account has its four bots), then only backfill the
+    # demo set if there are still no accounts at all.
+    engine.migrate_to_per_user_bots()
+    if not auth.any_users_exist():
+        _ensure_demo_bots()
 
     if AUTH_PASSWORD and _users_exist():
         print("Note: TRADEBOT_AUTH_PASSWORD is set but accounts exist — the "
@@ -443,16 +442,14 @@ def main():
 
     stop_event = threading.Event()
     if STANDALONE:
-        # one agent loop per profile, each obeying its own running/paused state.
-        # Stagger their starts so the four don't fire network-heavy scans (and
-        # spike memory) at the same instant.
-        for i, name in enumerate(engine.PROFILES):
-            threading.Thread(
-                target=agent.run_forever, args=(name, stop_event),
-                kwargs={"start_delay": i * 8}, daemon=True,
-            ).start()
-        print(f"Agent workers running in-process for {len(engine.PROFILES)} "
-              f"profiles: {', '.join(engine.PROFILES)}")
+        # One agent loop per active bot portfolio (each obeys its own
+        # running/paused state), supervised so bots created while the server
+        # runs — new accounts, or the admin claiming the demo set — get loops
+        # without a restart.
+        threading.Thread(target=agent.supervise_forever, args=(stop_event,),
+                         daemon=True).start()
+        print("Agent supervisor running in-process "
+              f"({len(engine.active_bot_names())} bot portfolios)")
 
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"TradeBOT dashboard:  http://127.0.0.1:{PORT}  (bound {HOST}:{PORT})")

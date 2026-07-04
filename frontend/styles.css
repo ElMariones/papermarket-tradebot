@@ -351,14 +351,15 @@ canvas{display:block;width:100%;padding:6px 6px 2px}
   text-align:center}
 .login-foot a{color:var(--accent)}
 
-/* ---------- MANUAL PORTFOLIOS ---------- */
-.status-manual{color:var(--accent);border-color:var(--accent-line);
-  background:var(--accent-soft)}
-.pf-kind{font-size:8.5px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;
-  color:var(--text-faint);border:1px solid var(--line-2);border-radius:3px;padding:0 4px}
-.pf-kind.mine{color:var(--up);border-color:rgba(39,192,138,.4)}
-.panel-note{padding:13px 15px;font-size:12px;color:var(--text-dim);line-height:1.6}
-.panel-note a{color:var(--accent)}
+/* ---------- SWITCHER (whose bots + which bot) ---------- */
+.switcher{display:flex;align-items:center;gap:8px;min-width:0}
+.owner-select{font-family:var(--sans);font-size:12px;font-weight:600;color:var(--text);
+  background:var(--bg-inset);border:1px solid var(--line-2);border-radius:var(--r-ctl);
+  padding:6px 9px;cursor:pointer;max-width:150px}
+.owner-select:hover{border-color:var(--text-faint)}
+.owner-select:focus{outline:none;border-color:var(--accent)}
+
+/* ---------- MANUAL TRADE TAGGING ---------- */
 .badge.MANUAL{color:var(--accent);background:var(--accent-soft);
   border-color:var(--accent-line);font-size:9px}
 tr.row-manual td:first-child{box-shadow:inset 2px 0 0 var(--accent)}

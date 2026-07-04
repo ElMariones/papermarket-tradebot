@@ -10,6 +10,8 @@ discovery the strategy scans over.
 from __future__ import annotations
 
 import json
+import threading
+import time
 from urllib.parse import urlencode
 
 from engine import GAMMA_API, api_get
@@ -88,6 +90,38 @@ def fetch_active_markets(limit: int = 40, order: str = "volume24hr") -> list[dic
             break  # last page (server returned fewer than asked)
         offset += len(page)
     return out
+
+
+# --------------------------------------------------------------------------
+# Shared scan cache. Every account runs its own copy of the four bots, so a
+# handful of profiles means a dozen-plus agent loops all wanting "the top N
+# markets by 24h volume" at roughly the same time. The ranked list barely
+# moves within a scan interval, so one fetch serves everyone: bots (and the
+# public /api/markets endpoint) read through this cache instead of each
+# hammering Gamma. TTL sits just under the fastest profile scan interval.
+# --------------------------------------------------------------------------
+
+_SCAN_TTL_SEC = 40.0
+_scan_cache = {"ts": 0.0, "limit": 0, "data": []}
+_scan_lock = threading.Lock()
+
+
+def fetch_active_markets_cached(limit: int = 40) -> list[dict]:
+    """fetch_active_markets, deduplicated across concurrent callers.
+
+    Holding the lock through the network fetch is deliberate: when 16 bot
+    loops wake at once, one pays for the scan and the rest wait for its
+    result rather than stampeding Gamma with identical requests."""
+    with _scan_lock:
+        fresh = (time.monotonic() - _scan_cache["ts"]) < _SCAN_TTL_SEC
+        if fresh and _scan_cache["limit"] >= limit:
+            return _scan_cache["data"][:limit]
+        # fetch at least as deep as the deepest recent caller so profiles
+        # with different markets_per_scan keep sharing one fetch
+        want = max(limit, _scan_cache["limit"] if fresh else 0)
+        data = fetch_active_markets(limit=want)
+        _scan_cache.update(ts=time.monotonic(), limit=want, data=data)
+        return data[:limit]
 
 
 def fetch_market_by_token(token_id: str) -> dict | None:

@@ -62,15 +62,16 @@ let SETTINGS = {};
 let activeTab = "trades";
 
 // ---- PERMISSIONS ----
-// Everyone sees everything; only the right account may act. Controls stay
-// visible but locked for everyone else — clicking one explains why.
-let PROFILE_INFO = {};   // name -> {kind: 'bot'|'user', owner_user_id, owner}
+// Everyone sees every account's bots; only the right account may act.
+// Controls stay visible but locked for everyone else — clicking one
+// explains why. Every portfolio is one user's copy of one bot.
+let PROFILE_INFO = {};   // full name ("mario:Kaladin") -> overview entry
 
 function canControl(name = CURRENT_PROFILE) {
   const info = PROFILE_INFO[name];
   if (!AUTH.user || !info) return false;
   if (AUTH.user.role === "admin") return true;
-  return info.kind === "user" && info.owner_user_id === AUTH.user.id;
+  return info.owner_user_id != null && info.owner_user_id === AUTH.user.id;
 }
 // Wrap a control handler: locked -> spectator message instead of the action.
 const guard = (fn) => (...args) =>
@@ -80,15 +81,6 @@ function applyPermissions() {
   const locked = !canControl();
   document.querySelectorAll(".ctl,.step,.chip,.tiny-close")
     .forEach((b) => b.classList.toggle("locked", locked));
-  // user portfolios have no agent loop: hide bot-only panels, show the hint
-  const info = PROFILE_INFO[CURRENT_PROFILE];
-  const manual = !!info && info.kind === "user";
-  const tog = (id, hide) => { const el = $(id); if (el) el.classList.toggle("hidden", hide); };
-  tog("panelCapacity", manual);
-  tog("panelStrategy", manual);
-  tog("panelManualHint", !manual);
-  document.querySelectorAll("#agentControls .ctl")
-    .forEach((b) => b.classList.toggle("hidden", manual));
 }
 document.addEventListener("auth-ready", () => { loadProfiles(); applyPermissions(); });
 
@@ -143,13 +135,6 @@ function setVal(id, n, signedFmt) {
 
 function renderAgent(a) {
   const pill = $("agentStatus");
-  const info = PROFILE_INFO[CURRENT_PROFILE];
-  if (info && info.kind === "user") {
-    pill.textContent = "manual";
-    pill.className = "status-pill status-manual";
-    pill.title = "Human-traded portfolio — no agent loop.";
-    return;
-  }
   pill.textContent = a.status;
   pill.className = "status-pill status-" + a.status;
   pill.title = (a.cycles ? a.cycles + " cycles" : "idle") +
@@ -488,21 +473,54 @@ $("btnTheme").onclick = () => {
   drawEquity();  // repaint the canvas with the new palette
 };
 
-// ---- PROFILE SWITCH (4 bots + every user's personal portfolio) ----
+// ---- SWITCHER: whose bots (owner select) + which bot (4 buttons) ----
+// Every account runs its own copy of the four bots, so the selector is
+// two-level: pick an account, then one of their Kaladin/Adolin/Dalinar/
+// Renarin. Spectators can browse every account's set.
+function ownerKey(p) { return p.owner || "__demo__"; }
+function ownerLabel(p) {
+  if (!p.owner) return "house bots";
+  const mine = AUTH.user && p.owner_user_id === AUTH.user.id;
+  return p.owner + (mine ? " (you)" : "");
+}
+
 function renderProfileSwitch(profiles) {
   PROFILE_INFO = Object.fromEntries(profiles.map((p) => [p.name, p]));
   const names = profiles.map((p) => p.name);
-  if (!names.includes(CURRENT_PROFILE)) CURRENT_PROFILE = names[0] || "Kaladin";
+  if (!names.length) return;
+  if (!names.includes(CURRENT_PROFILE)) {
+    // prefer the viewer's own Kaladin, else the first portfolio
+    const own = AUTH.user && profiles.find((p) => p.owner_user_id === AUTH.user.id);
+    CURRENT_PROFILE = own ? own.name : names[0];
+  }
+  const viewOwner = ownerKey(PROFILE_INFO[CURRENT_PROFILE]);
+
+  // owner dropdown (hidden while there's only one set of bots)
+  const owners = [];
+  profiles.forEach((p) => {
+    if (!owners.some((o) => o.key === ownerKey(p)))
+      owners.push({ key: ownerKey(p), label: ownerLabel(p) });
+  });
+  const sel = $("ownerSelect");
+  sel.classList.toggle("hidden", owners.length < 2);
+  sel.innerHTML = owners.map((o) =>
+    `<option value="${esc(o.key)}"${o.key === viewOwner ? " selected" : ""}>${esc(o.label)}</option>`).join("");
+  sel.onchange = () => {
+    const group = profiles.filter((p) => ownerKey(p) === sel.value);
+    // stay on the same bot identity across owners when possible
+    const bot = PROFILE_INFO[CURRENT_PROFILE] && PROFILE_INFO[CURRENT_PROFILE].bot;
+    const same = group.find((p) => p.bot === bot);
+    switchProfile((same || group[0]).name);
+  };
+
+  // the four bot buttons of the viewed account
   const nav = $("profileSwitch");
-  nav.innerHTML = profiles.map((p) => {
+  nav.innerHTML = profiles.filter((p) => ownerKey(p) === viewOwner).map((p) => {
     const active = p.name === CURRENT_PROFILE ? " active" : "";
     const pnl = (p.pnl_pct == null) ? "—" : `${p.pnl_pct >= 0 ? "+" : ""}${p.pnl_pct.toFixed(2)}%`;
     const pnlCls = p.pnl_pct == null ? "" : (p.pnl_pct > 0 ? " pos" : p.pnl_pct < 0 ? " neg" : "");
-    const mine = AUTH.user && p.kind === "user" && p.owner_user_id === AUTH.user.id;
-    const kind = p.kind === "bot" ? "bot" : mine ? "you" : "user";
-    return `<button class="profile-btn${active}" data-profile="${p.name}" title="${esc(p.blurb)}">
-      <span class="pf-name"><i class="pf-dot ${p.status}"></i>${esc(p.name)}
-        <span class="pf-kind${mine ? " mine" : ""}">${kind}</span></span>
+    return `<button class="profile-btn${active}" data-profile="${esc(p.name)}" title="${esc(p.blurb)}">
+      <span class="pf-name"><i class="pf-dot ${p.status}"></i>${esc(p.bot)}</span>
       <span class="pf-pnl${pnlCls}">${pnl}</span>
     </button>`;
   }).join("");

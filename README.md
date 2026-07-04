@@ -49,15 +49,21 @@ immediately, or **Pause / Stop** to halt.
 
 ---
 
-## Profiles — four independent bots
+## Profiles — four bots per account
 
-The dashboard runs **four separate bots** — **Kaladin**, **Adolin**, **Dalinar**,
-and **Renarin** — selectable from the top bar. Each is a fully independent
-portfolio: its own money, strategy parameters, open positions, trade history,
-reasoning log, equity curve, exports, and start/pause/stop state. They share
-nothing, run their own agent loops in parallel, and **resetting one wipes only
-that bot.** Each starts from a distinct strategy preset (balanced, aggressive,
-conservative, nimble) that you can edit live per profile.
+There are four bot identities — **Kaladin**, **Adolin**, **Dalinar**, and
+**Renarin** — each with a distinct strategy preset (balanced, aggressive,
+conservative, nimble). **Every account owns its own independent copy of all
+four.** A copy is a full portfolio: its own money, editable strategy
+parameters, open positions, trade history, reasoning log, equity curve,
+exports, agent loop and start/pause/stop state. Sara can turn *her* Dalinar
+into an aggressive buyer running on $50 while Mario's Dalinar stays
+conservative — the copies share nothing, and **resetting one wipes only that
+copy.** Four accounts means sixteen bots running in parallel (they share one
+cached market scan, so the network load doesn't multiply).
+
+The top bar has a two-level switcher: pick an account, then one of their
+four bots. Spectators can browse every account's set.
 
 ## Accounts & roles
 
@@ -69,32 +75,33 @@ python3 backend/create_user.py <username> <password>          # regular user
 python3 backend/create_user.py <username> <password> --role admin
 ```
 
-One command creates the account **and** its personal paper portfolio
-(default `$200`, or `--balance N`), ready to trade manually. Run it wherever
-the server's DB lives (locally, or `fly ssh console` on a deploy).
+One command creates the account **and** its set of four bots (default `$200`
+each, or `--balance N` per bot), created **stopped** — nothing trades until
+the owner presses Start. Run it wherever the server's DB lives (locally, or
+`fly ssh console` on a deploy). The **first admin** account doesn't get fresh
+copies: it **claims the original demo set, history and all** (see the
+migration note below).
 
 | Role | Can view | Can control |
 |------|----------|-------------|
-| **Spectator** (no login) | everything — every portfolio, bot and human, P&L included | nothing; every control is visible but locked, and clicking one points to requesting an account |
-| **User** | everything | their **own** portfolio only: manual buy/sell, funds, reset |
-| **Admin** | everything | everything — all bots, all user portfolios |
+| **Spectator** (no login) | everything — every account's bots, P&L included | nothing; every control is visible but locked, and clicking one points to requesting an account |
+| **User** | everything | their **own four bots** only: start/pause/stop/cycle, strategy params, manual buy/sell, funds, reset |
+| **Admin** | everything | everything — every account's bots |
 
 Visibility is deliberately unrestricted — the whole point is that friends can
-watch every portfolio compete. The restriction is on *actions*, not viewing.
-Sessions are opaque DB-backed tokens in an `httpOnly` cookie (30 days,
-revocable by deleting the row); passwords are `pbkdf2_hmac` — still zero
-third-party dependencies.
-
-A user's personal portfolio behaves like a bot profile **minus the agent
-loop**: no strategy runs against it, it only moves when its owner trades by
-hand on the Markets page (or deposits/withdraws/resets). The portfolio
-switcher lists bots and humans side by side, labeled `bot` / `you` / `user`.
+watch every account's bots compete. The restriction is on *actions*, not
+viewing. Sessions are opaque DB-backed tokens in an `httpOnly` cookie
+(30 days, revocable by deleting the row); passwords are `pbkdf2_hmac` —
+still zero third-party dependencies.
 
 > **Migration note:** existing single-password deployments keep working — if
 > `TRADEBOT_AUTH_PASSWORD` is set and **no accounts exist yet**, the whole
-> site stays behind HTTP Basic Auth exactly as before. The moment the first
-> account is created, that gate retires and the login system takes over
-> (the env var is then ignored; you can unset it).
+> site stays behind HTTP Basic Auth exactly as before (and whoever passes it
+> has full control, as before). A fresh install with no accounts runs an
+> unowned demo set of the four bots. When the first **admin** account is
+> created, it claims that demo set — portfolios, trade history, logs and
+> equity curves are renamed to `admin:Bot` and kept — and the Basic Auth
+> gate retires (the env var is then ignored; you can unset it).
 
 ## How it works
 
@@ -181,16 +188,20 @@ price-band gates (as a reference, not a restriction), tags the market classes
 some bots exclude (`single match`, `inplay`), and has a **book** button that
 pulls the live order book on demand (best bid/ask, spread, walkable depth).
 
-Signed-in users get **Buy YES / Buy NO** with an amount, and one-click
-**sell** on their open positions. Execution goes through the **exact same
-order-book fill simulation the agent uses** (`paper_engine_core.py` walks the
-real CLOB book for true average price and slippage) — there is no second,
-simplified pricing path to drift from reality. The only house rules: you
-can't spend more cash than the portfolio holds, and an empty book can't be
-filled. The bots' confidence bars and liquidity gates don't apply to humans.
+There is **no separate manual portfolio**: a manual trade lands in **one of
+your bots' portfolios**, alongside that bot's own automatic trades. The
+target defaults to whichever bot is selected in the terminal top bar (a
+selector on the page switches between your copies). Signed-in users get
+**Buy YES / Buy NO** with an amount, and one-click **sell** on the target
+bot's open positions. Execution goes through the **exact same order-book
+fill simulation the agent uses** (`paper_engine_core.py` walks the real CLOB
+book for true average price and slippage) — there is no second, simplified
+pricing path to drift from reality. The only house rules: you can't spend
+more cash than the bot holds, and an empty book can't be filled. The bots'
+confidence bars and liquidity gates don't apply to humans.
 
 Manual fills are tagged `source: "manual"` (vs `"agent"`) in the ledger and
-shown with a ✋ badge in trade history, so a human's picks and the bot's are
+shown with a ✋ badge in trade history, so your picks and the bot's are
 always distinguishable — including in CSV/JSON exports. Spectators see the
 full Markets page too; the trade buttons are locked.
 
@@ -218,7 +229,7 @@ full Markets page too; the trade buttons are locked.
 │   ├── agent.py              # cycle: manage exits → scan → trade; run-forever loop
 │   ├── worker.py             # standalone agent process entrypoint
 │   ├── auth.py               # accounts + sessions (pbkdf2, opaque cookie tokens)
-│   ├── create_user.py        # admin CLI: create account + personal portfolio
+│   ├── create_user.py        # admin CLI: create account + its four bots
 │   └── server.py             # stdlib REST API + static host + permission checks
 ├── frontend/
 │   ├── index.html · app.js   # the trading terminal

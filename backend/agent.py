@@ -21,7 +21,7 @@ import traceback
 
 import engine
 import strategy
-from polymarket_client import fetch_active_markets, fetch_market_by_token
+from polymarket_client import fetch_active_markets_cached, fetch_market_by_token
 
 # Hard safety guard. Flipping this to True is NOT enough to trade real money —
 # there is no live-execution code path in this project at all. It exists so the
@@ -174,7 +174,9 @@ def scan_and_trade(name: str, settings: dict) -> list[str]:
     cooldown = _cooldown_tokens(name, settings)
 
     try:
-        markets = fetch_active_markets(limit=int(settings["markets_per_scan"]))
+        # cached: with a copy of every bot per account, many loops want the
+        # same volume-ranked list — one Gamma fetch serves them all
+        markets = fetch_active_markets_cached(limit=int(settings["markets_per_scan"]))
     except Exception as exc:
         return [f"market scan failed: {exc}"]
 
@@ -293,6 +295,12 @@ def run_forever(name: str = "default", stop_event: threading.Event | None = None
     last_report = time.monotonic()
     _emit_hourly_report(name)  # baseline at startup
     while stop_event is None or not stop_event.is_set():
+        # A claim/migration can rename this portfolio out from under the
+        # loop (e.g. 'Kaladin' -> 'mario:Kaladin'); the supervisor spawns a
+        # loop for the new name, so this one just retires.
+        if not engine.portfolio_exists(name):
+            print(f"[{name}] portfolio gone (renamed or removed) — loop exiting")
+            return
         st = engine.get_agent_state(name)
         if st["status"] == "running":
             try:
@@ -309,6 +317,37 @@ def run_forever(name: str = "default", stop_event: threading.Event | None = None
             last_report = time.monotonic()
         # sleep in 1s slices so control changes are picked up quickly
         for _ in range(max(1, interval)):
+            if stop_event is not None and stop_event.is_set():
+                return
+            time.sleep(1)
+
+
+def supervise_forever(stop_event: threading.Event | None = None,
+                      refresh_sec: int = 20):
+    """
+    Keep one run_forever loop alive per ACTIVE bot portfolio — every user's
+    copies plus any unclaimed demo set. Rechecks the portfolio list every
+    `refresh_sec`, so bots created while the server runs (a new account via
+    create_user.py, or the admin claiming the demo set) start their loops
+    without a restart. New loops are staggered to avoid scan bursts.
+    """
+    threads: dict[str, threading.Thread] = {}
+    while stop_event is None or not stop_event.is_set():
+        try:
+            names = engine.active_bot_names()
+        except Exception:
+            names = []
+        fresh = [n for n in names
+                 if n not in threads or not threads[n].is_alive()]
+        for i, name in enumerate(fresh):
+            t = threading.Thread(target=run_forever, args=(name, stop_event),
+                                 kwargs={"start_delay": i * 8}, daemon=True)
+            threads[name] = t
+            t.start()
+        if fresh:
+            print(f"Agent loops running for {len([t for t in threads.values() if t.is_alive()])} "
+                  f"portfolios (+{len(fresh)} new)", flush=True)
+        for _ in range(refresh_sec):
             if stop_event is not None and stop_event.is_set():
                 return
             time.sleep(1)

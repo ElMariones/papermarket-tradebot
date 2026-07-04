@@ -1,10 +1,12 @@
 // markets.js — the Markets page: browse the live scan, trade by hand.
 //
-// Spectators see everything (list, prices, gates, book detail) but every
-// Buy/Sell is locked -> spectator modal. A signed-in user trades into their
-// OWN portfolio; an admin can pick any user portfolio from the selector.
-// Buys and sells go through POST /api/trade, which routes into the exact
-// same order-book fill simulation the bots use.
+// There is no separate manual portfolio: a manual trade lands in ONE OF
+// YOUR BOTS' portfolios, mixed in with that bot's own automatic trades
+// (tagged manual vs agent in history). The target defaults to whichever
+// bot is selected in the terminal top bar; the selector here switches
+// between your copies. Spectators see everything but every Buy/Sell is
+// locked -> spectator modal. Fills go through POST /api/trade — the exact
+// same order-book fill simulation the agent uses.
 
 const $ = (id) => document.getElementById(id);
 const money = (n) => (n < 0 ? "-$" : "$") + Math.abs(n).toFixed(2);
@@ -17,44 +19,49 @@ let MARKETS = [];
 let PROFILES = [];
 let TARGET = null;          // portfolio name manual trades go into
 
-function canTrade() {
-  if (!AUTH.user || !TARGET) return false;
+function controllable(p) {
+  if (!AUTH.user) return false;
   if (AUTH.user.role === "admin") return true;
+  return p.owner_user_id != null && p.owner_user_id === AUTH.user.id;
+}
+function canTrade() {
   const p = PROFILES.find((x) => x.name === TARGET);
-  return !!p && p.kind === "user" && p.owner_user_id === AUTH.user.id;
+  return !!p && controllable(p);
 }
 const guard = (fn) => (...a) => (canTrade() ? fn(...a) : showSpectatorModal());
 
-// ---- target portfolio ----
+// ---- target bot ----
+// Manual trades go into one of YOUR bots. Default = the bot selected in the
+// terminal top bar (shared via localStorage); the select switches between
+// your copies (admin: everyone's).
 async function loadProfilesAndTarget() {
   PROFILES = await (await fetch("/api/profiles")).json();
-  const userPfs = PROFILES.filter((p) => p.kind === "user");
-  if (AUTH.user) {
-    const mine = userPfs.find((p) => p.owner_user_id === AUTH.user.id);
-    TARGET = mine ? mine.name : (AUTH.user.role === "admin" && userPfs[0]
-      ? userPfs[0].name : null);
-    if (AUTH.user.role === "admin" && userPfs.length) {
-      // admins may act on any user's portfolio — expose the choice
-      $("targetRow").classList.remove("hidden");
-      $("targetSelect").innerHTML = userPfs.map((p) =>
-        `<option value="${esc(p.name)}"${p.name === TARGET ? " selected" : ""}>` +
-        `${esc(p.name)} (${esc(p.owner || "user")})</option>`).join("");
-      $("targetSelect").onchange = () => {
-        TARGET = $("targetSelect").value;
-        loadMine(); renderMarkets();
-      };
-    }
+  const mine = PROFILES.filter(controllable);
+  let saved = null;
+  try { saved = localStorage.getItem("tradebot-profile"); } catch (e) {}
+  if (mine.length) {
+    TARGET = mine.some((p) => p.name === saved) ? saved : mine[0].name;
+    $("targetRow").classList.remove("hidden");
+    $("targetSelect").innerHTML = mine.map((p) =>
+      `<option value="${esc(p.name)}"${p.name === TARGET ? " selected" : ""}>` +
+      `${esc(p.owner || "house")} · ${esc(p.bot)}</option>`).join("");
+    $("targetSelect").onchange = () => {
+      TARGET = $("targetSelect").value;
+      loadMine(); renderMarkets();
+    };
+  } else {
+    // spectator: show whichever bot the terminal is looking at, read-only
+    TARGET = PROFILES.some((p) => p.name === saved) ? saved
+           : (PROFILES[0] && PROFILES[0].name) || null;
   }
-  $("mineTitle").textContent = TARGET ? `Portfolio — ${TARGET}` : "Your portfolio";
+  $("mineTitle").textContent = TARGET ? `Bot portfolio — ${TARGET}` : "Bot portfolio";
 }
 
 async function loadMine() {
   const tb = $("minePosTable").querySelector("tbody");
   if (!TARGET) {
     $("mineSummary").textContent = "";
-    tb.innerHTML = `<tr><td colspan="7" class="empty">${AUTH.user
-      ? "No personal portfolio on this account."
-      : "Spectating — sign in to trade into your own portfolio."}</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="7" class="empty">No bots yet.</td></tr>`;
     return;
   }
   try {
@@ -64,7 +71,9 @@ async function loadMine() {
       `${money(pf.total_value)} total · ${money(pf.cash_balance)} cash · ` +
       `${pf.num_open_positions} open`;
     if (!pf.positions.length) {
-      tb.innerHTML = `<tr><td colspan="7" class="empty">No open positions — buy something below.</td></tr>`;
+      tb.innerHTML = `<tr><td colspan="7" class="empty">${canTrade()
+        ? "No open positions — buy something below (it lands in this bot's portfolio)."
+        : "No open positions."}</td></tr>`;
       return;
     }
     tb.innerHTML = pf.positions.map((p) => `
