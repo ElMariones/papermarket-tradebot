@@ -163,7 +163,8 @@ def _init_schema(conn: sqlite3.Connection):
             total_cost    REAL NOT NULL,
             reasoning     TEXT,
             executed_at   TEXT NOT NULL,
-            entry_avg     REAL
+            entry_avg     REAL,
+            source        TEXT NOT NULL DEFAULT 'agent'
         );
 
         CREATE TABLE IF NOT EXISTS daily_snapshots (
@@ -508,6 +509,7 @@ def place_order(
     portfolio_name: str = "default",
     fee_rate: float = DEFAULT_FEE_RATE,
     force: bool = False,
+    source: str = "agent",
 ) -> dict:
     """
     Place a paper trade.
@@ -521,6 +523,7 @@ def place_order(
         portfolio_name: Which portfolio to trade in
         fee_rate: Fee rate override (default 0 for most markets)
         force: Skip risk checks (except balance)
+        source: 'agent' (bot decision) or 'manual' (human via dashboard)
 
     Returns: Trade execution result dict.
     """
@@ -643,11 +646,11 @@ def place_order(
             """INSERT INTO trades
                (portfolio_id, token_id, market_question, side, action,
                 shares, price, fee, total_cost, reasoning, executed_at,
-                entry_avg)
-               VALUES (?, ?, ?, ?, 'BUY', ?, ?, ?, ?, ?, ?, ?)""",
+                entry_avg, source)
+               VALUES (?, ?, ?, ?, 'BUY', ?, ?, ?, ?, ?, ?, ?, ?)""",
             (pid, token_id, market_question, side,
              fill["shares_filled"], fill["avg_price"], fill["fee"],
-             fill["total_cost"], reasoning, now, fill["avg_price"]),
+             fill["total_cost"], reasoning, now, fill["avg_price"], source),
         )
 
         conn.commit()
@@ -679,6 +682,7 @@ def close_position(
     portfolio_name: str = "default",
     fee_rate: float = DEFAULT_FEE_RATE,
     reasoning: str = "",
+    source: str = "agent",
 ) -> dict:
     """
     Close an open position at current market price.
@@ -780,12 +784,12 @@ def close_position(
                 """INSERT INTO trades
                    (portfolio_id, token_id, market_question, side, action,
                     shares, price, fee, total_cost, reasoning, executed_at,
-                    entry_avg)
-                   VALUES (?, ?, ?, ?, 'SELL', ?, ?, ?, ?, ?, ?, ?)""",
+                    entry_avg, source)
+                   VALUES (?, ?, ?, ?, 'SELL', ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (pid, token_id, pos["market_question"], pos["side"],
                  round(shares_sold, 4), round(avg_sell_price, 6),
                  round(fee, 4), round(net_proceeds, 4), reasoning, now,
-                 pos["avg_entry"]),
+                 pos["avg_entry"], source),
             )
 
             results.append({

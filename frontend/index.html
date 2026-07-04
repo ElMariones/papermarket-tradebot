@@ -29,23 +29,28 @@
     <span class="live-tag" title="All market data is live from Polymarket. All execution is simulated — no real funds.">
       <i class="dot-live"></i>LIVE DATA · PAPER
     </span>
+    <nav class="page-nav" aria-label="Pages">
+      <a href="/" class="page-link active">Terminal</a>
+      <a href="/markets" class="page-link">Markets</a>
+    </nav>
   </div>
 
-  <nav class="profile-switch" id="profileSwitch" aria-label="Bot profile"
-       title="Four independent bots — each its own money, strategy, trades and logs"></nav>
+  <nav class="profile-switch" id="profileSwitch" aria-label="Portfolio"
+       title="Four independent bots plus every user's personal portfolio — each its own money, trades and logs"></nav>
 
   <div class="topbar-right">
+    <span id="authWidget" class="auth-widget"></span>
     <button id="btnTheme" class="btn btn-icon" title="Toggle light / dark theme" aria-label="Toggle theme">☾</button>
     <div class="clock">
       <span id="localClock" class="clock-time">--:--:--</span>
       <span id="clockZone" class="clock-zone">local</span>
     </div>
-    <div class="agent-controls">
+    <div class="agent-controls" id="agentControls">
       <span id="agentStatus" class="status-pill status-stopped">stopped</span>
-      <button id="btnStart" class="btn btn-go" title="Begin auto-trading on the scan interval">Start</button>
-      <button id="btnPause" class="btn" title="Pause trading, keep positions">Pause</button>
-      <button id="btnStop" class="btn btn-stop" title="Halt the loop">Stop</button>
-      <button id="btnCycle" class="btn btn-accent" title="Run one scan/trade pass right now">Cycle</button>
+      <button id="btnStart" class="btn btn-go ctl" title="Begin auto-trading on the scan interval">Start</button>
+      <button id="btnPause" class="btn ctl" title="Pause trading, keep positions">Pause</button>
+      <button id="btnStop" class="btn btn-stop ctl" title="Halt the loop">Stop</button>
+      <button id="btnCycle" class="btn btn-accent ctl" title="Run one scan/trade pass right now">Cycle</button>
       <span class="help" title="Start = begin auto-trading. Pause = stop trading but keep positions. Stop = halt the loop. Cycle = run one pass now. The pill shows status and cycle count.">?</span>
     </div>
   </div>
@@ -181,7 +186,14 @@
 
   <!-- RIGHT RAIL -->
   <div class="col-side">
-    <section class="panel">
+    <section class="panel hidden" id="panelManualHint">
+      <div class="panel-head"><h2>Manual portfolio</h2></div>
+      <p class="panel-note">This portfolio has no bot behind it — it only moves
+        when its owner trades by hand. Head to the
+        <a href="/markets">Markets page</a> to buy and sell live markets.</p>
+    </section>
+
+    <section class="panel" id="panelCapacity">
       <div class="panel-head"><h2>Capacity</h2>
         <span class="help" title="How aggressively the agent diversifies. Max positions = most markets held at once (each up to 5% of equity). Markets/scan = how many top markets it surveys per cycle. Applies instantly.">?</span>
       </div>
@@ -216,8 +228,8 @@
       </div>
       <div class="field-row">
         <input id="fundAmount" type="number" min="1" step="1" value="100" />
-        <button id="btnFund" class="btn btn-go" title="Add cash to this profile">Deposit</button>
-        <button id="btnWithdraw" class="btn btn-stop" title="Remove cash from this profile">Withdraw</button>
+        <button id="btnFund" class="btn btn-go ctl" title="Add cash to this profile">Deposit</button>
+        <button id="btnWithdraw" class="btn btn-stop ctl" title="Remove cash from this profile">Withdraw</button>
       </div>
       <div class="chip-row">
         <button class="chip" data-amt="50">+50</button>
@@ -227,22 +239,22 @@
       <div id="fundMsg" class="form-msg"></div>
     </section>
 
-    <section class="panel">
+    <section class="panel" id="panelStrategy">
       <div class="panel-head"><h2>Strategy</h2>
         <span class="help" title="The agent buys whichever side is the favorite when its price sits in the band below, fading the overpriced longshot. Only after volume, book-depth and spread checks. Exits on take-profit, stop-loss, or resolution.">?</span>
       </div>
       <form id="settingsForm" class="settings"></form>
-      <button id="btnSaveSettings" class="btn btn-accent full">Save parameters</button>
+      <button id="btnSaveSettings" class="btn btn-accent full ctl">Save parameters</button>
       <div id="settingsMsg" class="form-msg"></div>
     </section>
 
-    <section class="panel danger">
+    <section class="panel danger" id="panelReset">
       <div class="panel-head"><h2>Reset</h2>
         <span class="help" title="Wipes ALL positions, trades, equity history, decisions and hourly reports, and restarts the balance below. Strategy params and position cap are kept. Cannot be undone.">?</span>
       </div>
       <div class="field-row">
         <input id="resetBalance" type="number" min="1" step="1" value="200" title="Balance to restart with" />
-        <button id="btnReset" class="btn btn-stop">Reset all</button>
+        <button id="btnReset" class="btn btn-stop ctl">Reset all</button>
       </div>
       <div id="resetMsg" class="form-msg"></div>
     </section>
@@ -259,6 +271,7 @@
   <code>~/.polymarket-paper/portfolio.db</code>
 </footer>
 
+<script src="/auth-ui.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

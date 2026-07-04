@@ -298,6 +298,107 @@ canvas{display:block;width:100%;padding:6px 6px 2px}
   .profile-switch{order:3;width:100%;overflow-x:auto}
   .profile-btn{flex:1;min-width:0}
 }
+/* ============================================================
+   ACCOUNTS · SPECTATOR MODE · MANUAL TRADING
+   ============================================================ */
+
+/* ---------- PAGE NAV (Terminal | Markets) ---------- */
+.page-nav{display:flex;gap:2px;margin-left:10px}
+.page-link{font-size:11.5px;font-weight:600;color:var(--text-faint);text-decoration:none;
+  padding:4px 10px;border-radius:5px;transition:.12s}
+.page-link:hover{color:var(--text-dim);background:var(--bg-hover)}
+.page-link.active{color:var(--accent);background:var(--accent-soft)}
+
+/* ---------- AUTH WIDGET ---------- */
+.auth-widget{display:inline-flex;align-items:center;gap:8px}
+.auth-name{font-family:var(--mono);font-size:11.5px;color:var(--text-dim);
+  display:inline-flex;align-items:center;gap:6px}
+.auth-role{font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--accent);
+  border:1px solid var(--accent-line);background:var(--accent-soft);
+  padding:1px 6px;border-radius:999px}
+.auth-link{text-decoration:none;display:inline-flex;align-items:center}
+
+/* ---------- LOCKED CONTROLS (spectator / not-your-portfolio) ----------
+   Visible but clearly untouchable — the point is that visitors SEE the
+   controls they're missing. Click still fires -> spectator modal. */
+.locked{opacity:.45;cursor:not-allowed!important;filter:saturate(.4)}
+.locked:hover{border-color:var(--line-2)!important;color:inherit;
+  background:var(--bg-inset)!important;transform:none!important}
+
+/* ---------- SPECTATOR MODAL ---------- */
+.modal-overlay{position:fixed;inset:0;z-index:100;display:none;align-items:center;
+  justify-content:center;background:rgba(0,0,0,.55);backdrop-filter:blur(3px)}
+.modal-overlay.open{display:flex}
+.modal{background:var(--bg-elev);border:1px solid var(--line-2);border-radius:12px;
+  padding:26px 28px;max-width:420px;margin:16px;text-align:center;
+  box-shadow:0 18px 50px rgba(0,0,0,.45)}
+.modal-eye{font-size:26px;margin-bottom:8px}
+.modal h3{font-size:14px;font-weight:650;letter-spacing:.02em;margin-bottom:8px}
+.modal p{font-size:12.5px;color:var(--text-dim);line-height:1.6}
+.modal p a{color:var(--accent)}
+.modal-actions{display:flex;gap:8px;justify-content:center;margin-top:16px}
+.modal-actions .btn{text-decoration:none}
+
+/* ---------- LOGIN PAGE ---------- */
+.login-body{display:flex;align-items:center;justify-content:center;min-height:100vh;
+  padding:20px}
+.login-card{width:100%;max-width:360px;padding:28px 26px}
+.login-brand{justify-content:center;margin-bottom:22px}
+.login-form{display:flex;flex-direction:column;gap:12px}
+.login-form .setting input{font-size:14px;padding:9px 11px}
+.login-msg{color:var(--down);padding:6px 0 0;text-align:center}
+.login-foot{margin-top:18px;font-size:11.5px;color:var(--text-faint);line-height:1.6;
+  text-align:center}
+.login-foot a{color:var(--accent)}
+
+/* ---------- MANUAL PORTFOLIOS ---------- */
+.status-manual{color:var(--accent);border-color:var(--accent-line);
+  background:var(--accent-soft)}
+.pf-kind{font-size:8.5px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;
+  color:var(--text-faint);border:1px solid var(--line-2);border-radius:3px;padding:0 4px}
+.pf-kind.mine{color:var(--up);border-color:rgba(39,192,138,.4)}
+.panel-note{padding:13px 15px;font-size:12px;color:var(--text-dim);line-height:1.6}
+.panel-note a{color:var(--accent)}
+.badge.MANUAL{color:var(--accent);background:var(--accent-soft);
+  border-color:var(--accent-line);font-size:9px}
+tr.row-manual td:first-child{box-shadow:inset 2px 0 0 var(--accent)}
+
+/* ---------- MARKETS PAGE ---------- */
+.markets-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  padding:12px 15px;border-bottom:1px solid var(--line)}
+.markets-toolbar label{font-size:11px;color:var(--text-faint)}
+.markets-toolbar input[type="search"]{flex:1;min-width:160px;font-family:var(--mono);
+  font-size:12px;color:var(--text);background:var(--bg-inset);
+  border:1px solid var(--line-2);border-radius:var(--r-ctl);padding:7px 11px}
+.markets-toolbar input:focus{outline:none;border-color:var(--accent)}
+.gate-chip{font-family:var(--mono);font-size:9.5px;font-weight:700;padding:1px 6px;
+  border-radius:4px;border:1px solid var(--line-2);color:var(--text-faint)}
+.gate-chip.ok{color:var(--up);border-color:rgba(39,192,138,.35);background:var(--up-soft)}
+.trade-cell{display:flex;align-items:center;gap:6px;justify-content:flex-end}
+.trade-cell input{width:64px;font-family:var(--mono);font-size:12px;color:var(--text);
+  background:var(--bg-inset);border:1px solid var(--line-2);border-radius:5px;
+  padding:5px 7px;text-align:right}
+.trade-cell input:focus{outline:none;border-color:var(--accent)}
+.btn-buy-yes{color:var(--up);border-color:rgba(39,192,138,.35);background:var(--up-soft)}
+.btn-buy-yes:hover{border-color:var(--up)}
+.btn-buy-no{color:var(--accent);border-color:var(--accent-line);background:var(--accent-soft)}
+.btn-buy-no:hover{border-color:var(--accent)}
+.book-row td{background:var(--bg-inset);font-family:var(--mono);font-size:11px;
+  color:var(--text-dim)}
+.book-row .book-cols{display:flex;gap:22px;flex-wrap:wrap;padding:2px 0}
+.tag-chip{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;
+  color:var(--down);border:1px solid rgba(240,80,106,.35);background:var(--down-soft);
+  padding:0 5px;border-radius:3px;margin-left:5px}
+.markets-status{padding:10px 15px;font-family:var(--mono);font-size:11px;
+  color:var(--text-faint)}
+.mkt-wide{max-width:420px}
+#marketsTable td{vertical-align:middle}
+
+@media(max-width:900px){
+  .page-nav{margin-left:4px}
+  .mkt-wide{max-width:220px}
+}
+
 @media (prefers-reduced-motion: reduce){
   *{transition:none!important;animation:none!important}
 }

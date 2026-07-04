@@ -5,6 +5,15 @@ Uses only the Python standard library (http.server) so the whole project
 runs on a stock Python install with no pip step. Serves the JSON API under
 /api/* and the dashboard (frontend/) for everything else.
 
+Access model (see auth.py):
+  * READS are public — anyone can watch every portfolio (spectator mode).
+  * WRITES require a session: admins control everything; users control only
+    their own portfolio; spectators get a friendly pointer to request an
+    account instead of a raw 401.
+  * Legacy fallback: if TRADEBOT_AUTH_PASSWORD is set and NO accounts exist
+    yet, the whole site is gated behind HTTP Basic Auth exactly like the old
+    single-password releases. The first created account retires that mode.
+
 The background agent loop lives in this process; the dashboard's
 start/pause/stop buttons drive it.
 """
@@ -16,16 +25,20 @@ import hmac
 import json
 import os
 import threading
+import time
+from http import cookies as http_cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 import agent
+import auth
 import engine
+import strategy
+from polymarket_client import fetch_active_markets
 
-# --- access control -------------------------------------------------------
-# If TRADEBOT_AUTH_PASSWORD is set, the whole site (API + dashboard) requires
-# HTTP Basic Auth. Unset => open (local dev). Set it as a Fly secret in prod.
+# --- legacy access control ------------------------------------------------
+# Honored ONLY while no user accounts exist (one-release migration path).
 AUTH_USER = os.environ.get("TRADEBOT_AUTH_USER", "admin")
 AUTH_PASSWORD = os.environ.get("TRADEBOT_AUTH_PASSWORD", "")
 
@@ -36,6 +49,11 @@ HOST = os.environ.get("HOST", "0.0.0.0")
 # On a true split deploy you'd set this to 0 and run worker.py separately.
 STANDALONE = os.environ.get("TRADEBOT_STANDALONE", "1") not in ("0", "false", "")
 
+# Shown whenever someone without the right account clicks a control. Keep the
+# copy identical everywhere so it reads as intentional, not as an error.
+SPECTATOR_MSG = ("You're viewing this as a spectator. Want your own portfolio? "
+                 "Email mariolandaburuclares@gmail.com")
+
 _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".js": "application/javascript; charset=utf-8",
@@ -44,17 +62,54 @@ _CONTENT_TYPES = {
     ".ico": "image/x-icon",
 }
 
+# --- login rate limiting (in-memory, best-effort) --------------------------
+_LOGIN_FAILS: dict[str, list[float]] = {}
+_LOGIN_FAILS_LOCK = threading.Lock()
+_LOGIN_MAX_FAILS = 10
+_LOGIN_WINDOW_SEC = 900
+
+
+def _login_blocked(ip: str) -> bool:
+    now = time.monotonic()
+    with _LOGIN_FAILS_LOCK:
+        fails = [t for t in _LOGIN_FAILS.get(ip, []) if now - t < _LOGIN_WINDOW_SEC]
+        _LOGIN_FAILS[ip] = fails
+        return len(fails) >= _LOGIN_MAX_FAILS
+
+
+def _login_failed(ip: str) -> None:
+    with _LOGIN_FAILS_LOCK:
+        _LOGIN_FAILS.setdefault(ip, []).append(time.monotonic())
+
+
+# Once any account exists, legacy Basic Auth is permanently retired (cached so
+# static file requests don't hit SQLite; flips at most once per process).
+_users_exist_cache = {"value": None, "checked": 0.0}
+
+
+def _users_exist() -> bool:
+    if _users_exist_cache["value"] is True:
+        return True
+    now = time.monotonic()
+    if (_users_exist_cache["value"] is None
+            or now - _users_exist_cache["checked"] > 15):
+        _users_exist_cache["value"] = auth.any_users_exist()
+        _users_exist_cache["checked"] = now
+    return _users_exist_cache["value"]
+
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "TradeBOT/1.0"
 
     # --- helpers ---------------------------------------------------------
-    def _send_json(self, obj, status=200):
+    def _send_json(self, obj, status=200, extra_headers=None):
         body = json.dumps(obj, default=str).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for k, v in (extra_headers or []):
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 
@@ -70,10 +125,53 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):  # quiet the default noisy logging
         pass
 
-    # --- auth ------------------------------------------------------------
-    def _authed(self) -> bool:
-        if not AUTH_PASSWORD:
-            return True  # auth disabled (local dev)
+    # --- sessions ----------------------------------------------------------
+    def _session_token(self) -> str | None:
+        raw = self.headers.get("Cookie")
+        if not raw:
+            return None
+        try:
+            jar = http_cookies.SimpleCookie(raw)
+            morsel = jar.get(auth.SESSION_COOKIE)
+            return morsel.value if morsel else None
+        except http_cookies.CookieError:
+            return None
+
+    def _current_user(self) -> dict | None:
+        return auth.get_session_user(self._session_token())
+
+    def _session_cookie_header(self, token: str, max_age: int) -> tuple[str, str]:
+        parts = [
+            f"{auth.SESSION_COOKIE}={token}",
+            "Path=/", "HttpOnly", "SameSite=Lax", f"Max-Age={max_age}",
+        ]
+        # Secure cookies break plain-HTTP LAN use, so only mark it when the
+        # request actually came over TLS (Fly and most proxies set the header).
+        if self.headers.get("X-Forwarded-Proto", "").lower() == "https":
+            parts.append("Secure")
+        return ("Set-Cookie", "; ".join(parts))
+
+    def _can_control(self, user: dict | None, profile: str) -> bool:
+        """Admin: everything. User: only the portfolio they own. Spectator: nothing."""
+        if not user:
+            return False
+        if user["role"] == "admin":
+            return True
+        owner = engine.portfolio_owner(profile)
+        return (owner["owner_type"] == "user"
+                and owner["owner_user_id"] == user["id"])
+
+    def _deny_control(self):
+        """403 with the observer message — the frontend turns this into the
+        spectator modal instead of a raw error."""
+        self._send_json({"error": "forbidden", "spectator": True,
+                         "message": SPECTATOR_MSG}, status=403)
+
+    # --- legacy basic auth (only while no accounts exist) ------------------
+    def _legacy_gate_active(self) -> bool:
+        return bool(AUTH_PASSWORD) and not _users_exist()
+
+    def _legacy_authed(self) -> bool:
         hdr = self.headers.get("Authorization", "")
         if not hdr.startswith("Basic "):
             return False
@@ -84,8 +182,8 @@ class Handler(BaseHTTPRequestHandler):
         return (hmac.compare_digest(user, AUTH_USER)
                 and hmac.compare_digest(pw, AUTH_PASSWORD))
 
-    def _require_auth(self) -> bool:
-        if self._authed():
+    def _require_legacy_auth(self) -> bool:
+        if not self._legacy_gate_active() or self._legacy_authed():
             return True
         self.send_response(401)
         self.send_header("WWW-Authenticate", 'Basic realm="TradeBOT"')
@@ -96,13 +194,17 @@ class Handler(BaseHTTPRequestHandler):
 
     # --- routing ---------------------------------------------------------
     def do_GET(self):
-        if not self._require_auth():
+        if not self._require_legacy_auth():
             return
         parsed = urlparse(self.path)
         path = parsed.path
         qs = parse_qs(parsed.query)
         pf = engine.resolve_profile(qs.get("profile", [None])[0])
         try:
+            # All reads are public: spectators see every portfolio, bot or
+            # human — the gate is on actions, not on viewing.
+            if path == "/api/auth/me":
+                return self._auth_me()
             if path == "/api/profiles":
                 return self._send_json(engine.get_profiles_overview())
             if path == "/api/portfolio":
@@ -124,6 +226,12 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/reports":
                 limit = int(qs.get("limit", ["168"])[0])
                 return self._send_json(engine.get_hourly_reports(pf, limit))
+            if path == "/api/markets":
+                limit = max(1, min(300, int(qs.get("limit", ["100"])[0])))
+                return self._send_json(self._markets_list(limit))
+            if path == "/api/markets/book":
+                token = qs.get("token_id", [""])[0]
+                return self._send_json(self._book_summary(token))
             if path == "/api/export":
                 data = engine.export_all(pf)
                 stamp = data["exported_at"][:19].replace(":", "").replace("-", "")
@@ -141,12 +249,44 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"error": str(exc)}, status=500)
 
     def do_POST(self):
-        if not self._require_auth():
+        if not self._require_legacy_auth():
             return
         path = urlparse(self.path).path
         body = self._read_json()
-        pf = engine.resolve_profile(body.get("profile"))
         try:
+            # auth endpoints are open — they're how you stop being a spectator
+            if path == "/api/auth/login":
+                return self._auth_login(body)
+            if path == "/api/auth/logout":
+                return self._auth_logout()
+
+            pf = engine.resolve_profile(body.get("profile"))
+            user = self._current_user()
+
+            # Everything below changes portfolio state → ownership check.
+            # Admin controls everything; a user only their own portfolio;
+            # spectators (and users poking other portfolios) get the message.
+            if not self._can_control(user, pf):
+                return self._deny_control()
+
+            if path.startswith("/api/agent/"):
+                # user portfolios have no autonomous loop — nothing to drive
+                if engine.portfolio_owner(pf)["owner_type"] == "user":
+                    return self._send_json(
+                        {"error": f"'{pf}' is a manual portfolio — it has no "
+                                  "agent loop to control. Trade it from the "
+                                  "Markets page."}, status=400)
+                if path == "/api/agent/start":
+                    return self._send_json(agent.start(pf))
+                if path == "/api/agent/pause":
+                    return self._send_json(agent.pause(pf))
+                if path == "/api/agent/resume":
+                    return self._send_json(agent.resume(pf))
+                if path == "/api/agent/stop":
+                    return self._send_json(agent.stop(pf))
+                if path == "/api/agent/cycle":
+                    return self._send_json(agent.run_cycle(pf))
+
             if path == "/api/add-funds":
                 amt = float(body.get("amount", 0))
                 return self._send_json(engine.add_funds(amt, pf))
@@ -157,20 +297,16 @@ class Handler(BaseHTTPRequestHandler):
                 # don't let the routing key leak into the strategy config
                 updates = {k: v for k, v in body.items() if k != "profile"}
                 return self._send_json(engine.save_settings(pf, updates))
-            if path == "/api/agent/start":
-                return self._send_json(agent.start(pf))
-            if path == "/api/agent/pause":
-                return self._send_json(agent.pause(pf))
-            if path == "/api/agent/resume":
-                return self._send_json(agent.resume(pf))
-            if path == "/api/agent/stop":
-                return self._send_json(agent.stop(pf))
-            if path == "/api/agent/cycle":
-                return self._send_json(agent.run_cycle(pf))
             if path == "/api/close":
                 token = body.get("token_id"); side = body.get("side")
-                return self._send_json(engine.close_position(
-                    token, side, pf, reasoning="Manual close from dashboard."))
+                return self._send_json(engine.manual_trade(
+                    pf, token, side, "sell", None,
+                    username=user["username"]))
+            if path == "/api/trade":
+                return self._send_json(engine.manual_trade(
+                    pf, body.get("token_id"), body.get("side"),
+                    body.get("action"), body.get("amount"),
+                    username=user["username"]))
             if path == "/api/report":
                 return self._send_json(engine.record_hourly_report(pf))
             if path == "/api/reset":
@@ -184,10 +320,90 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             return self._send_json({"error": str(exc)}, status=400)
 
+    # --- auth endpoints ----------------------------------------------------
+    def _auth_login(self, body: dict):
+        ip = self.client_address[0]
+        if _login_blocked(ip):
+            return self._send_json(
+                {"error": "Too many failed attempts — try again later."},
+                status=429)
+        user = auth.verify_login(body.get("username", ""),
+                                 body.get("password", ""))
+        if not user:
+            _login_failed(ip)
+            # identical message whether the username exists or not
+            return self._send_json(
+                {"error": "Invalid username or password."}, status=401)
+        token = auth.create_session(user["id"])
+        hdr = self._session_cookie_header(
+            token, auth.SESSION_TTL_DAYS * 86400)
+        return self._send_json({"user": user}, extra_headers=[hdr])
+
+    def _auth_logout(self):
+        auth.delete_session(self._session_token())
+        hdr = self._session_cookie_header("", 0)  # expire the cookie
+        return self._send_json({"user": None}, extra_headers=[hdr])
+
+    def _auth_me(self):
+        user = self._current_user()
+        if not user:
+            return self._send_json({"user": None})
+        portfolios = [p for p in engine.user_portfolio_names()
+                      if engine.portfolio_owner(p)["owner_user_id"] == user["id"]]
+        return self._send_json({"user": {**user,
+                                         "portfolio": portfolios[0] if portfolios else None}})
+
+    # --- markets (manual trading) -------------------------------------------
+    def _markets_list(self, limit: int) -> dict:
+        """The same live scan the bots run over (Gamma, top 24h volume),
+        UNFILTERED — a human may want markets the bots skip. Each row carries
+        the baseline pre-book gate flags as a reference, not a restriction."""
+        markets = fetch_active_markets(limit=limit)
+        gates = engine.DEFAULT_SETTINGS
+        out = []
+        for m in markets:
+            fav = max(m["yes_price"], m["no_price"])
+            out.append({
+                "id": m["id"], "question": m["question"], "slug": m["slug"],
+                "yes_token": m["yes_token"], "no_token": m["no_token"],
+                "yes_price": m["yes_price"], "no_price": m["no_price"],
+                "volume24hr": m["volume24hr"], "liquidity": m["liquidity"],
+                "end_date": m["end_date"],
+                "tags": sorted(strategy.classify_market(m["question"])),
+                # pre-book gates only (volume + favorite band); spread/depth
+                # need a CLOB fetch per market — done on demand via /book.
+                "gate_volume": m["volume24hr"] >= gates["min_volume24h"],
+                "gate_band": gates["fav_low"] <= fav <= gates["fav_high"],
+            })
+        return {"markets": out,
+                "gates": {"min_volume24h": gates["min_volume24h"],
+                          "fav_low": gates["fav_low"],
+                          "fav_high": gates["fav_high"]}}
+
+    def _book_summary(self, token_id: str) -> dict:
+        """Live order-book snapshot for one token: spread + walkable depth.
+        Used by the Markets page detail row and as a pre-trade sanity view."""
+        book = engine.fetch_orderbook(token_id)
+        asks, bids = book.get("asks", []), book.get("bids", [])
+        best_ask = strategy._best(asks, "ask")
+        best_bid = strategy._best(bids, "bid")
+        return {
+            "token_id": token_id,
+            "best_bid": best_bid, "best_ask": best_ask,
+            "spread": (round(best_ask - best_bid, 4)
+                       if best_ask is not None and best_bid is not None else None),
+            "ask_depth_usd": round(strategy._book_depth_usd(asks), 2),
+            "bid_depth_usd": round(strategy._book_depth_usd(bids), 2),
+        }
+
     # --- static files ----------------------------------------------------
     def _serve_static(self, path):
         if path == "/" or path == "":
             path = "/index.html"
+        elif path == "/login":
+            path = "/login.html"
+        elif path == "/markets":
+            path = "/markets.html"
         target = (FRONTEND_DIR / path.lstrip("/")).resolve()
         if not str(target).startswith(str(FRONTEND_DIR.resolve())) or not target.is_file():
             self.send_error(404)
@@ -220,6 +436,10 @@ def _ensure_profile(name: str) -> None:
 def main():
     for name in engine.PROFILES:
         _ensure_profile(name)
+
+    if AUTH_PASSWORD and _users_exist():
+        print("Note: TRADEBOT_AUTH_PASSWORD is set but accounts exist — the "
+              "legacy Basic Auth gate is retired; login handles access now.")
 
     stop_event = threading.Event()
     if STANDALONE:

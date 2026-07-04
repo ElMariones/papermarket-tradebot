@@ -19,6 +19,7 @@ env/
 
 # OS / editor
 .DS_Store
+._*
 *.swp
 .idea/
 .vscode/

@@ -61,6 +61,37 @@ let equityData = [];
 let SETTINGS = {};
 let activeTab = "trades";
 
+// ---- PERMISSIONS ----
+// Everyone sees everything; only the right account may act. Controls stay
+// visible but locked for everyone else — clicking one explains why.
+let PROFILE_INFO = {};   // name -> {kind: 'bot'|'user', owner_user_id, owner}
+
+function canControl(name = CURRENT_PROFILE) {
+  const info = PROFILE_INFO[name];
+  if (!AUTH.user || !info) return false;
+  if (AUTH.user.role === "admin") return true;
+  return info.kind === "user" && info.owner_user_id === AUTH.user.id;
+}
+// Wrap a control handler: locked -> spectator message instead of the action.
+const guard = (fn) => (...args) =>
+  canControl() ? fn(...args) : showSpectatorModal();
+
+function applyPermissions() {
+  const locked = !canControl();
+  document.querySelectorAll(".ctl,.step,.chip,.tiny-close")
+    .forEach((b) => b.classList.toggle("locked", locked));
+  // user portfolios have no agent loop: hide bot-only panels, show the hint
+  const info = PROFILE_INFO[CURRENT_PROFILE];
+  const manual = !!info && info.kind === "user";
+  const tog = (id, hide) => { const el = $(id); if (el) el.classList.toggle("hidden", hide); };
+  tog("panelCapacity", manual);
+  tog("panelStrategy", manual);
+  tog("panelManualHint", !manual);
+  document.querySelectorAll("#agentControls .ctl")
+    .forEach((b) => b.classList.toggle("hidden", manual));
+}
+document.addEventListener("auth-ready", () => { loadProfiles(); applyPermissions(); });
+
 async function refresh() {
   try {
     const s = await api("/api/summary");
@@ -112,6 +143,13 @@ function setVal(id, n, signedFmt) {
 
 function renderAgent(a) {
   const pill = $("agentStatus");
+  const info = PROFILE_INFO[CURRENT_PROFILE];
+  if (info && info.kind === "user") {
+    pill.textContent = "manual";
+    pill.className = "status-pill status-manual";
+    pill.title = "Human-traded portfolio — no agent loop.";
+    return;
+  }
   pill.textContent = a.status;
   pill.className = "status-pill status-" + a.status;
   pill.title = (a.cycles ? a.cycles + " cycles" : "idle") +
@@ -133,14 +171,14 @@ function renderPositions(positions) {
       <td class="num">${p.current_price.toFixed(3)}</td>
       <td class="num">${money(p.value)}</td>
       <td class="num ${cls(p.unrealized_pnl)}">${signed(p.unrealized_pnl)}</td>
-      <td><button class="tiny-close" data-token="${p.token_id}" data-side="${p.side}">close</button></td>
+      <td><button class="tiny-close${canControl() ? "" : " locked"}" data-token="${p.token_id}" data-side="${p.side}">close</button></td>
     </tr>`).join("");
   tb.querySelectorAll(".tiny-close").forEach((b) =>
-    b.onclick = async () => {
+    b.onclick = guard(async () => {
       b.textContent = "…";
       await api("/api/close", "POST", { token_id: b.dataset.token, side: b.dataset.side });
       refresh(); loadTrades();
-    });
+    }));
 }
 
 async function loadTrades() {
@@ -155,10 +193,13 @@ async function loadTrades() {
     const procCell = isSell
       ? `<td class="num ${cls(pnl)}" title="Realized P&L ${signed(pnl)} (sold @ ${r.price.toFixed(3)} vs entry ${r.entry_avg.toFixed(3)})">${money(r.total_cost)} <span class="pnl-tag">${signed(pnl)}</span></td>`
       : `<td class="num">${money(r.total_cost)}</td>`;
+    // Human fills are tagged so a user's own calls read apart from the bot's.
+    const srcTag = r.source === "manual"
+      ? ` <span class="badge MANUAL" title="Placed by hand, not by the agent">✋ manual</span>` : "";
     return `
-    <tr>
+    <tr${r.source === "manual" ? ' class="row-manual"' : ""}>
       <td class="t-time">${ts(r.executed_at)}</td>
-      <td><span class="badge ${r.action}">${r.action}</span></td>
+      <td><span class="badge ${r.action}">${r.action}</span>${srcTag}</td>
       <td><span class="badge ${r.side}">${r.side}</span></td>
       <td class="mkt" title="${esc(r.market_question)}">${esc(r.market_question)}</td>
       <td class="num">${r.shares.toFixed(1)}</td>
@@ -292,14 +333,14 @@ async function loadSettings() {
     </div>`).join("");
   renderCapacity();
 }
-$("btnSaveSettings").onclick = async () => {
+$("btnSaveSettings").onclick = guard(async () => {
   const body = {};
   SETTING_FIELDS.forEach(([k]) => { body[k] = parseFloat($("set_" + k).value); });
   const s = await api("/api/settings", "POST", body);
   SETTINGS = s; renderCapacity();
   const m = $("settingsMsg"); m.textContent = "✓ Parameters saved.";
   setTimeout(() => (m.textContent = ""), 2500);
-};
+});
 
 // ---- POSITION CAPACITY STEPPERS ----
 async function applyCap(key, value) {
@@ -314,21 +355,21 @@ async function applyCap(key, value) {
   refresh();
 }
 document.querySelectorAll(".step").forEach((b) =>
-  b.onclick = () => applyCap(b.dataset.key, (SETTINGS[b.dataset.key] || 0) + (+b.dataset.delta)));
+  b.onclick = guard(() => applyCap(b.dataset.key, (SETTINGS[b.dataset.key] || 0) + (+b.dataset.delta))));
 document.querySelectorAll(".set-cap").forEach((c) =>
-  c.onclick = () => applyCap(c.dataset.key, +c.dataset.val));
+  c.onclick = guard(() => applyCap(c.dataset.key, +c.dataset.val)));
 
 // ---- AGENT CONTROLS ----
-const ctl = (path) => async () => { await api(path, "POST"); refresh(); };
+const ctl = (path) => guard(async () => { await api(path, "POST"); refresh(); });
 $("btnStart").onclick = ctl("/api/agent/start");
 $("btnPause").onclick = ctl("/api/agent/pause");
 $("btnStop").onclick = ctl("/api/agent/stop");
-$("btnCycle").onclick = async () => {
+$("btnCycle").onclick = guard(async () => {
   $("btnCycle").textContent = "running…";
   await api("/api/agent/cycle", "POST");
   $("btnCycle").textContent = "Cycle";
   refresh(); loadTrades(); loadDecisions(); loadEquity();
-};
+});
 
 // ---- FUNDS (deposit / withdraw) ----
 function fundMsg(text, ok) {
@@ -345,13 +386,13 @@ async function moveFunds(endpoint, amount, verb) {
   else fundMsg(`✓ ${verb} $${amount.toFixed(2)}.`, true);
   refresh(); loadProfiles();
 }
-$("btnFund").onclick = () => moveFunds("/api/add-funds", parseFloat($("fundAmount").value), "Deposited");
-$("btnWithdraw").onclick = () => moveFunds("/api/withdraw-funds", parseFloat($("fundAmount").value), "Withdrew");
+$("btnFund").onclick = guard(() => moveFunds("/api/add-funds", parseFloat($("fundAmount").value), "Deposited"));
+$("btnWithdraw").onclick = guard(() => moveFunds("/api/withdraw-funds", parseFloat($("fundAmount").value), "Withdrew"));
 document.querySelectorAll(".chip[data-amt]").forEach((c) =>
-  c.onclick = () => moveFunds("/api/add-funds", +c.dataset.amt, "Deposited"));
+  c.onclick = guard(() => moveFunds("/api/add-funds", +c.dataset.amt, "Deposited")));
 
 // ---- RESET (with confirmation) ----
-$("btnReset").onclick = async () => {
+$("btnReset").onclick = guard(async () => {
   const bal = parseFloat($("resetBalance").value) || 200;
   const ok = confirm(
     `Reset ${CURRENT_PROFILE}?\n\nThis permanently wipes ${CURRENT_PROFILE}'s positions, ` +
@@ -370,7 +411,7 @@ $("btnReset").onclick = async () => {
     b.textContent = "Reset all"; b.disabled = false;
     refresh(); loadSettings(); loadTrades(); loadDecisions(); loadEquity(); loadReports();
   }
-};
+});
 
 // ---- TABS ----
 const PANES = { trades: "tradesPane", decisions: "decisionsPane", reports: "reportsPane" };
@@ -413,6 +454,7 @@ const CSV_SPECS = {
     ["market", (r) => r.market_question], ["shares", (r) => r.shares], ["price", (r) => r.price],
     ["cost_or_proceeds", (r) => r.total_cost], ["entry_avg", (r) => r.entry_avg],
     ["realized_pnl", (r) => (r.action === "SELL" && r.entry_avg != null ? ((r.price - r.entry_avg) * r.shares).toFixed(4) : "")],
+    ["source", (r) => r.source || "agent"],
     ["rationale", (r) => r.reasoning]]],
   decisions: ["decisions?limit=100000", [
     ["time_utc", (r) => r.ts], ["signal", (r) => r.signal], ["acted", (r) => r.acted],
@@ -446,8 +488,9 @@ $("btnTheme").onclick = () => {
   drawEquity();  // repaint the canvas with the new palette
 };
 
-// ---- PROFILE SWITCH (4 independent bots) ----
+// ---- PROFILE SWITCH (4 bots + every user's personal portfolio) ----
 function renderProfileSwitch(profiles) {
+  PROFILE_INFO = Object.fromEntries(profiles.map((p) => [p.name, p]));
   const names = profiles.map((p) => p.name);
   if (!names.includes(CURRENT_PROFILE)) CURRENT_PROFILE = names[0] || "Kaladin";
   const nav = $("profileSwitch");
@@ -455,13 +498,17 @@ function renderProfileSwitch(profiles) {
     const active = p.name === CURRENT_PROFILE ? " active" : "";
     const pnl = (p.pnl_pct == null) ? "—" : `${p.pnl_pct >= 0 ? "+" : ""}${p.pnl_pct.toFixed(2)}%`;
     const pnlCls = p.pnl_pct == null ? "" : (p.pnl_pct > 0 ? " pos" : p.pnl_pct < 0 ? " neg" : "");
+    const mine = AUTH.user && p.kind === "user" && p.owner_user_id === AUTH.user.id;
+    const kind = p.kind === "bot" ? "bot" : mine ? "you" : "user";
     return `<button class="profile-btn${active}" data-profile="${p.name}" title="${esc(p.blurb)}">
-      <span class="pf-name"><i class="pf-dot ${p.status}"></i>${p.name}</span>
+      <span class="pf-name"><i class="pf-dot ${p.status}"></i>${esc(p.name)}
+        <span class="pf-kind${mine ? " mine" : ""}">${kind}</span></span>
       <span class="pf-pnl${pnlCls}">${pnl}</span>
     </button>`;
   }).join("");
   nav.querySelectorAll(".profile-btn").forEach((b) =>
     b.onclick = () => switchProfile(b.dataset.profile));
+  applyPermissions();
 }
 async function loadProfiles() {
   try { renderProfileSwitch(await api("/api/profiles")); } catch (e) { /* transient */ }
@@ -470,9 +517,10 @@ function switchProfile(name) {
   if (name === CURRENT_PROFILE) return;
   CURRENT_PROFILE = name;
   try { localStorage.setItem("tradebot-profile", name); } catch (e) {}
-  // reload every panel for the newly selected bot
+  // reload every panel for the newly selected portfolio
   loadProfiles(); refresh(); loadSettings();
   loadTrades(); loadDecisions(); loadEquity(); loadReports();
+  applyPermissions();
 }
 
 // ---- INIT + POLL ----

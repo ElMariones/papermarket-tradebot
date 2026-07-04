@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sign in — TradeBOT</title>
+<link rel="stylesheet" href="/styles.css" />
+<script>
+  (function () {
+    try {
+      var saved = localStorage.getItem("tradebot-theme");
+      var theme = saved ||
+        (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches
+          ? "light" : "dark");
+      if (theme === "light") document.documentElement.setAttribute("data-theme", "light");
+    } catch (e) {}
+  })();
+</script>
+</head>
+<body class="login-body">
+
+<div class="login-card panel">
+  <div class="brand login-brand">
+    <span class="mark" aria-hidden="true"></span>
+    <span class="brand-name">TradeBOT<span class="brand-dim">/terminal</span></span>
+  </div>
+
+  <!-- No registration on purpose: accounts are created by the admin. -->
+  <form id="loginForm" class="login-form" autocomplete="on">
+    <div class="setting">
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" autocomplete="username"
+             autofocus required />
+    </div>
+    <div class="setting">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password"
+             autocomplete="current-password" required />
+    </div>
+    <button type="submit" class="btn btn-accent full" id="btnLogin">Sign in</button>
+    <div id="loginMsg" class="form-msg login-msg"></div>
+  </form>
+
+  <p class="login-foot">
+    No account? The site is fully viewable without one —
+    <a href="/">watch as a spectator</a>. Want your own portfolio?
+    Email <a href="mailto:mariolandaburuclares@gmail.com">mariolandaburuclares@gmail.com</a>
+  </p>
+</div>
+
+<script>
+document.getElementById("loginForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById("btnLogin");
+  const msg = document.getElementById("loginMsg");
+  btn.disabled = true; btn.textContent = "Signing in…"; msg.textContent = "";
+  try {
+    const r = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: document.getElementById("username").value.trim(),
+        password: document.getElementById("password").value,
+      }),
+    });
+    const d = await r.json();
+    if (r.ok && d.user) { location.href = "/"; return; }
+    msg.textContent = "✗ " + (d.error || "Login failed.");
+  } catch (err) {
+    msg.textContent = "✗ Network error — is the server up?";
+  }
+  btn.disabled = false; btn.textContent = "Sign in";
+};
+</script>
+</body>
+</html>

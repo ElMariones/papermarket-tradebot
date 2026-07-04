@@ -155,8 +155,40 @@ def _ensure_extra_schema():
 
             CREATE INDEX IF NOT EXISTS idx_hourly_pf_ts
                 ON hourly_reports(portfolio_name, ts);
+
+            -- Accounts (auth.py owns the logic; the tables live here so every
+            -- entrypoint that writes portfolios sees them — the portfolios
+            -- owner_user_id FK below needs users to exist first).
+            CREATE TABLE IF NOT EXISTS users (
+                id            INTEGER PRIMARY KEY,
+                username      TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                salt          TEXT NOT NULL,
+                role          TEXT NOT NULL DEFAULT 'user',  -- 'admin' | 'user'
+                created_at    TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS sessions (
+                token      TEXT PRIMARY KEY,
+                user_id    INTEGER NOT NULL REFERENCES users(id),
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            );
             """
         )
+        # Column migrations for DBs created before accounts/manual trading.
+        # ALTER TABLE ADD COLUMN raises if the column exists, so probe first.
+        def _add_column(table: str, ddl: str, col: str):
+            have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+            if col not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+        # 'bot' = one of the four autonomous profiles; 'user' = a personal
+        # portfolio owned by an account, traded only by hand (no agent loop).
+        _add_column("portfolios", "owner_type TEXT NOT NULL DEFAULT 'bot'", "owner_type")
+        _add_column("portfolios", "owner_user_id INTEGER REFERENCES users(id)", "owner_user_id")
+        # who initiated each fill: the agent loop or a human on the dashboard
+        _add_column("trades", "source TEXT NOT NULL DEFAULT 'agent'", "source")
         conn.commit()
     finally:
         conn.close()
@@ -286,8 +318,67 @@ PROFILE_META = {
 
 
 def resolve_profile(name: str | None) -> str:
-    """Normalize an incoming profile name to a known one (default = first)."""
-    return name if name in PROFILES else PROFILES[0]
+    """Normalize an incoming profile name to a known one (default = first).
+    Accepts the four bot profiles and any user-owned personal portfolio."""
+    if name in PROFILES:
+        return name
+    if name and name in user_portfolio_names():
+        return name
+    return PROFILES[0]
+
+
+def user_portfolio_names() -> list[str]:
+    """Names of active user-owned (manual) portfolios."""
+    conn = _conn()
+    try:
+        rows = conn.execute(
+            "SELECT name FROM portfolios WHERE owner_type = 'user' AND active = 1 "
+            "ORDER BY id"
+        ).fetchall()
+        return [r["name"] for r in rows]
+    finally:
+        conn.close()
+
+
+def portfolio_owner(name: str) -> dict:
+    """Ownership info for a portfolio: {'owner_type', 'owner_user_id'}."""
+    conn = _conn()
+    try:
+        row = conn.execute(
+            "SELECT owner_type, owner_user_id FROM portfolios "
+            "WHERE name = ? AND active = 1 ORDER BY id DESC LIMIT 1", (name,),
+        ).fetchone()
+        if row:
+            return {"owner_type": row["owner_type"],
+                    "owner_user_id": row["owner_user_id"]}
+        return {"owner_type": "bot", "owner_user_id": None}
+    finally:
+        conn.close()
+
+
+def create_user_portfolio(username: str, user_id: int,
+                          balance: float | None = None) -> dict:
+    """
+    Create the personal (manual) portfolio for a user account. Behaves like a
+    bot profile minus the agent loop: it changes only via manual trades on the
+    Markets page, Funds, or Reset. Named after the user.
+    """
+    if portfolio_exists(username):
+        raise ValueError(f"Portfolio '{username}' already exists")
+    if balance is None:
+        balance = float(os.environ.get("TRADEBOT_START_BALANCE", "200"))
+    pf = init_portfolio(balance, username, dict(DEFAULT_RISK))
+    conn = _conn()
+    try:
+        conn.execute(
+            "UPDATE portfolios SET owner_type = 'user', owner_user_id = ? "
+            "WHERE id = ?", (user_id, pf["portfolio_id"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    record_equity(username)  # seed the equity curve at the starting balance
+    return pf
 
 
 def _defaults_for(name: str) -> dict:
@@ -316,23 +407,43 @@ def get_settings(name: str = "default") -> dict:
 
 
 def get_profiles_overview() -> list[dict]:
-    """Lightweight per-profile status for the dashboard selector (no live
-    price refresh — the active profile's main view handles mark-to-market)."""
+    """Lightweight per-portfolio status for the dashboard selector (no live
+    price refresh — the active profile's main view handles mark-to-market).
+    Lists the four bots first, then every user's personal portfolio, with
+    ownership info so the frontend can label and gate controls."""
+    conn = _conn()
+    try:
+        user_rows = conn.execute(
+            """SELECT p.name, p.owner_user_id, u.username AS owner
+               FROM portfolios p LEFT JOIN users u ON u.id = p.owner_user_id
+               WHERE p.owner_type = 'user' AND p.active = 1 ORDER BY p.id"""
+        ).fetchall()
+    finally:
+        conn.close()
+
+    entries = [(name, "bot", None, None) for name in PROFILES]
+    entries += [(r["name"], "user", r["owner_user_id"], r["owner"])
+                for r in user_rows]
+
     out = []
-    for name in PROFILES:
+    for name, kind, owner_id, owner in entries:
         meta = PROFILE_META.get(name, {})
+        blurb = meta.get("blurb", "" if kind == "bot" else
+                         f"{owner or name}'s manual portfolio — human trades only")
+        base = {"name": name, "kind": kind, "owner_user_id": owner_id,
+                "owner": owner, "blurb": blurb}
         try:
             s = compute_summary(name, refresh=False)
             pf = s["portfolio"]
             out.append({
-                "name": name, "blurb": meta.get("blurb", ""),
-                "status": s["agent"]["status"], "cycles": s["agent"].get("cycles", 0),
+                **base,
+                "status": s["agent"]["status"] if kind == "bot" else "manual",
+                "cycles": s["agent"].get("cycles", 0),
                 "total_value": pf["total_value"], "pnl_pct": pf["pnl_pct"],
                 "num_positions": pf["num_open_positions"],
             })
         except Exception:
-            out.append({"name": name, "blurb": meta.get("blurb", ""),
-                        "status": "stopped", "cycles": 0,
+            out.append({**base, "status": "stopped", "cycles": 0,
                         "total_value": None, "pnl_pct": None, "num_positions": 0})
     return out
 
@@ -564,8 +675,56 @@ def withdraw_funds(amount: float, name: str = "default") -> dict:
     return _move_funds(amount, name, sign=-1)
 
 
+def manual_trade(name: str, token_id: str, side: str, action: str,
+                 amount: float | None, username: str = "") -> dict:
+    """
+    Execute a human-initiated trade through the SAME order-book fill
+    simulation the bot uses (place_order / close_position walk the real CLOB
+    book) — no separate pricing path, so manual fills match agent fills.
+
+    House rules only: a buy must fit the cash balance (enforced inside
+    place_order) and the book must have depth to walk (both paths raise on an
+    empty book). The bot's strategy confidence bar and liquidity gates do NOT
+    apply — those are the agent's rules, not the market's. force=True skips
+    the agent's portfolio risk guards for the same reason.
+    """
+    side = (side or "").upper()
+    action = (action or "").lower()
+    if side not in ("YES", "NO"):
+        raise ValueError("side must be YES or NO")
+    if action not in ("buy", "sell"):
+        raise ValueError("action must be buy or sell")
+
+    who = f" by {username}" if username else ""
+    if action == "buy":
+        if not amount or amount <= 0:
+            raise ValueError("amount must be positive")
+        result = place_order(
+            token_id=token_id, side=side, size=float(amount),
+            reasoning=f"Manual buy{who} from the Markets page.",
+            portfolio_name=name, force=True, source="manual")
+        signal = f"BUY_{side}"
+        note = (f"MANUAL BUY {side} ${amount:.2f} @ {result['avg_price']:.3f} "
+                f"({result['shares']:.2f} shares)")
+    else:
+        result = close_position(
+            token_id, side, name,
+            reasoning=f"Manual close{who} from the dashboard.",
+            source="manual")
+        r = result if isinstance(result, dict) else result[0]
+        signal = "EXIT"
+        note = (f"MANUAL SELL {side} {r['shares_sold']:.2f} shares "
+                f"@ {r['avg_sell_price']:.3f} (P&L ${r['realized_pnl']:+.2f})")
+
+    market_q = result["market"] if isinstance(result, dict) else result[0]["market"]
+    log_decision(name, token_id, market_q, signal, True, None, note)
+    record_equity(name)  # manual portfolios have no cycle to snapshot for them
+    return result
+
+
 def settle_position(token_id: str, side: str, price: float,
-                    name: str = "default", reasoning: str = "") -> dict:
+                    name: str = "default", reasoning: str = "",
+                    source: str = "agent") -> dict:
     """
     Force-close an open position at a fixed price (no order-book walk).
 
@@ -603,10 +762,12 @@ def settle_position(token_id: str, side: str, price: float,
         conn.execute(
             """INSERT INTO trades
                (portfolio_id, token_id, market_question, side, action,
-                shares, price, fee, total_cost, reasoning, executed_at, entry_avg)
-               VALUES (?, ?, ?, ?, 'SELL', ?, ?, 0, ?, ?, ?, ?)""",
+                shares, price, fee, total_cost, reasoning, executed_at,
+                entry_avg, source)
+               VALUES (?, ?, ?, ?, 'SELL', ?, ?, 0, ?, ?, ?, ?, ?)""",
             (pid, token_id, pos["market_question"], side, round(shares, 4),
-             round(price, 6), round(proceeds, 4), reasoning, now, pos["avg_entry"]),
+             round(price, 6), round(proceeds, 4), reasoning, now,
+             pos["avg_entry"], source),
         )
         conn.commit()
         return {
@@ -688,8 +849,10 @@ def reset_all(name: str = "default", balance: float | None = None,
     if balance <= 0:
         raise ValueError("Reset balance must be positive")
 
-    # Preserve the prior settings (so a raised position cap survives reset).
+    # Preserve the prior settings (so a raised position cap survives reset)
+    # and ownership (so a user's personal portfolio stays theirs).
     prior_settings = get_settings(name)
+    owner = portfolio_owner(name)
     conn = _conn()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -712,10 +875,22 @@ def reset_all(name: str = "default", balance: float | None = None,
         "max_single_market_pct": 0.10, "daily_loss_limit_pct": 0.05,
         "max_drawdown_pct": 0.30, "human_approval_pct": 0.20,
     }
-    init_portfolio(balance, name, risk)
+    pf_new = init_portfolio(balance, name, risk)
+    if owner["owner_type"] == "user":
+        conn = _conn()
+        try:
+            conn.execute(
+                "UPDATE portfolios SET owner_type = 'user', owner_user_id = ? "
+                "WHERE id = ?", (owner["owner_user_id"], pf_new["portfolio_id"]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
     save_settings(name, {})  # re-sync risk_config with preserved settings
     record_equity(name)      # seed the new equity curve
-    set_agent_status(name, "running" if keep_running else "stopped",
+    # user portfolios have no agent loop, so never mark them 'running'
+    run = keep_running and owner["owner_type"] != "user"
+    set_agent_status(name, "running" if run else "stopped",
                      message="portfolio reset")
     return get_portfolio(name, refresh_prices=False)
 

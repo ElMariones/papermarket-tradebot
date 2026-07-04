@@ -12,11 +12,21 @@ walking actual bids/asks for a true average price and slippage.
  ┌──────────────┐   live prices    ┌──────────────────┐  simulated fills   ┌────────────┐
  │ Polymarket   │ ───────────────▶ │  Agent loop       │ ─────────────────▶ │  SQLite    │
  │ CLOB + Gamma │                  │  strategy + risk  │                    │  ledger    │
- └──────────────┘                  └──────────────────┘                    └─────┬──────┘
-                                                                                  │
-                                                       ┌──────────────────────────▼─────┐
-                                                       │  Dashboard (web terminal UI)    │
-                                                       └─────────────────────────────────┘
+ └──────┬───────┘                  └──────────────────┘                    └─────┬──────┘
+        │ live order books                                                        │
+        │                          ┌──────────────────┐   same fill engine       │
+        └────────────────────────▶ │  Manual trading   │ ────────────────────────▶│
+                                   │  (Markets page)   │                          │
+                                   └────────▲─────────┘                          │
+                                            │ owner-only writes                  │
+                              ┌─────────────┴──────────────┐   reads open to all │
+                              │  Auth: accounts + sessions  │◀────────────────────┘
+                              │  admin / user / spectator   │
+                              └─────────────▲──────────────┘
+                                            │
+                               ┌────────────┴───────────────┐
+                               │  Dashboard (web terminal)   │
+                               └────────────────────────────┘
 ```
 
 ---
@@ -48,6 +58,43 @@ reasoning log, equity curve, exports, and start/pause/stop state. They share
 nothing, run their own agent loops in parallel, and **resetting one wipes only
 that bot.** Each starts from a distinct strategy preset (balanced, aggressive,
 conservative, nimble) that you can edit live per profile.
+
+## Accounts & roles
+
+The site is a public trading terminal with named accounts on top. There is
+**no signup form** — the admin creates every account from the CLI:
+
+```bash
+python3 backend/create_user.py <username> <password>          # regular user
+python3 backend/create_user.py <username> <password> --role admin
+```
+
+One command creates the account **and** its personal paper portfolio
+(default `$200`, or `--balance N`), ready to trade manually. Run it wherever
+the server's DB lives (locally, or `fly ssh console` on a deploy).
+
+| Role | Can view | Can control |
+|------|----------|-------------|
+| **Spectator** (no login) | everything — every portfolio, bot and human, P&L included | nothing; every control is visible but locked, and clicking one points to requesting an account |
+| **User** | everything | their **own** portfolio only: manual buy/sell, funds, reset |
+| **Admin** | everything | everything — all bots, all user portfolios |
+
+Visibility is deliberately unrestricted — the whole point is that friends can
+watch every portfolio compete. The restriction is on *actions*, not viewing.
+Sessions are opaque DB-backed tokens in an `httpOnly` cookie (30 days,
+revocable by deleting the row); passwords are `pbkdf2_hmac` — still zero
+third-party dependencies.
+
+A user's personal portfolio behaves like a bot profile **minus the agent
+loop**: no strategy runs against it, it only moves when its owner trades by
+hand on the Markets page (or deposits/withdraws/resets). The portfolio
+switcher lists bots and humans side by side, labeled `bot` / `you` / `user`.
+
+> **Migration note:** existing single-password deployments keep working — if
+> `TRADEBOT_AUTH_PASSWORD` is set and **no accounts exist yet**, the whole
+> site stays behind HTTP Basic Auth exactly as before. The moment the first
+> account is created, that gate retires and the login system takes over
+> (the env var is then ignored; you can unset it).
 
 ## How it works
 
@@ -124,6 +171,29 @@ in the dashboard's **Reasoning Log** tab.
 
 All timestamps render in your **local timezone**; stored values are UTC.
 
+## Manual trading — the Markets page
+
+`/markets` shows the **same live scan the bots trade from** (top Polymarket
+markets by 24h volume, via the Gamma API) — deliberately **unfiltered**, so a
+human can trade markets the bots skip. Each row shows live YES/NO prices and
+24h volume, flags which markets would pass the bots' baseline volume +
+price-band gates (as a reference, not a restriction), tags the market classes
+some bots exclude (`single match`, `inplay`), and has a **book** button that
+pulls the live order book on demand (best bid/ask, spread, walkable depth).
+
+Signed-in users get **Buy YES / Buy NO** with an amount, and one-click
+**sell** on their open positions. Execution goes through the **exact same
+order-book fill simulation the agent uses** (`paper_engine_core.py` walks the
+real CLOB book for true average price and slippage) — there is no second,
+simplified pricing path to drift from reality. The only house rules: you
+can't spend more cash than the portfolio holds, and an empty book can't be
+filled. The bots' confidence bars and liquidity gates don't apply to humans.
+
+Manual fills are tagged `source: "manual"` (vs `"agent"`) in the ledger and
+shown with a ✋ badge in trade history, so a human's picks and the bot's are
+always distinguishable — including in CSV/JSON exports. Spectators see the
+full Markets page too; the trade buttons are locked.
+
 ---
 
 ## Tech
@@ -147,8 +217,15 @@ All timestamps render in your **local timezone**; stored values are UTC.
 │   ├── strategy.py           # favorite-longshot decision engine
 │   ├── agent.py              # cycle: manage exits → scan → trade; run-forever loop
 │   ├── worker.py             # standalone agent process entrypoint
-│   └── server.py             # stdlib REST API + static dashboard host
-├── frontend/                 # index.html · styles.css · app.js (vanilla)
+│   ├── auth.py               # accounts + sessions (pbkdf2, opaque cookie tokens)
+│   ├── create_user.py        # admin CLI: create account + personal portfolio
+│   └── server.py             # stdlib REST API + static host + permission checks
+├── frontend/
+│   ├── index.html · app.js   # the trading terminal
+│   ├── markets.html · markets.js   # live market browser + manual buy/sell
+│   ├── login.html            # sign-in (no registration — accounts via CLI)
+│   ├── auth-ui.js            # shared auth state + spectator modal
+│   └── styles.css
 ├── Dockerfile · requirements.txt · .env.example · run.sh
 ```
 
@@ -165,7 +242,8 @@ All timestamps render in your **local timezone**; stored values are UTC.
 | Scan interval | `scan_interval_sec` param (default 60s) |
 | DB location | `TRADEBOT_DB_PATH` env (default `~/.polymarket-paper/portfolio.db`) |
 | Port | `PORT` env (default 8765) |
-| Optional login | Set `TRADEBOT_AUTH_PASSWORD` (and optional `TRADEBOT_AUTH_USER`) to require HTTP Basic auth for the whole site. Unset = open. |
+| Accounts | `python3 backend/create_user.py <user> <pass> [--role admin] [--balance N]` — see **Accounts & roles**. Session lifetime is the `SESSION_TTL_DAYS` constant in `backend/auth.py` (30 days); no secret env var needed — tokens are random and DB-backed. |
+| Legacy login (deprecated) | `TRADEBOT_AUTH_PASSWORD` (+ optional `TRADEBOT_AUTH_USER`) still gates the whole site with HTTP Basic Auth, but **only while no accounts exist**. Ignored once the first account is created. |
 
 ### CLI (no dashboard)
 

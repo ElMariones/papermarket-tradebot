@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Markets — TradeBOT</title>
+<link rel="stylesheet" href="/styles.css" />
+<script>
+  (function () {
+    try {
+      var saved = localStorage.getItem("tradebot-theme");
+      var theme = saved ||
+        (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches
+          ? "light" : "dark");
+      if (theme === "light") document.documentElement.setAttribute("data-theme", "light");
+    } catch (e) {}
+  })();
+</script>
+</head>
+<body>
+
+<!-- TOP BAR -->
+<header class="topbar">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <span class="brand-name">TradeBOT<span class="brand-dim">/markets</span></span>
+    <span class="live-tag" title="All market data is live from Polymarket. All execution is simulated — no real funds.">
+      <i class="dot-live"></i>LIVE DATA · PAPER
+    </span>
+    <nav class="page-nav" aria-label="Pages">
+      <a href="/" class="page-link">Terminal</a>
+      <a href="/markets" class="page-link active">Markets</a>
+    </nav>
+  </div>
+  <div class="topbar-right">
+    <span id="authWidget" class="auth-widget"></span>
+  </div>
+</header>
+
+<main class="grid" style="grid-template-columns:1fr">
+  <div class="col-main">
+
+    <!-- YOUR PORTFOLIO + OPEN POSITIONS (only meaningful when signed in,
+         but rendered for everyone — spectators see the locked state) -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2 id="mineTitle">Your portfolio</h2>
+        <div class="panel-tools">
+          <span id="mineSummary" class="panel-sub"></span>
+          <span class="help" title="Manual trades land here: your own paper portfolio, completely separate from the bots. Same fill engine — every order walks the real Polymarket order book.">?</span>
+        </div>
+      </div>
+      <div id="targetRow" class="markets-toolbar hidden">
+        <label for="targetSelect">Trading into</label>
+        <select id="targetSelect" class="btn"></select>
+      </div>
+      <div class="table-wrap">
+        <table id="minePosTable">
+          <thead><tr>
+            <th>Market</th><th>Side</th><th class="num">Shares</th>
+            <th class="num">Entry</th><th class="num">Mark</th>
+            <th class="num">P&L</th><th></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- LIVE MARKETS -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Live markets</h2>
+        <div class="panel-tools">
+          <span id="marketsCount" class="panel-sub"></span>
+          <button id="btnReloadMarkets" class="btn btn-mini">Reload</button>
+          <span class="help" title="The same live scan the bots trade from: top Polymarket markets by 24h volume, unfiltered. ✓gates = would pass the bots' baseline volume + price-band gates (book depth/spread checked on demand via the book button). You can trade markets the bots skip.">?</span>
+        </div>
+      </div>
+      <div class="markets-toolbar">
+        <input id="marketSearch" type="search" placeholder="Filter markets…" />
+        <label><input type="checkbox" id="onlyGates" /> only markets passing bot gates</label>
+      </div>
+      <div class="table-wrap" style="max-height:600px">
+        <table id="marketsTable">
+          <thead><tr>
+            <th>Market</th><th class="num">YES</th><th class="num">NO</th>
+            <th class="num">Vol 24h</th><th>Bot gates</th><th></th>
+            <th class="num">Trade</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div id="marketsStatus" class="markets-status"></div>
+    </section>
+  </div>
+</main>
+
+<footer class="footer">
+  <span>Live Polymarket CLOB / Gamma</span>
+  <span class="foot-sep"></span>
+  <span>Execution simulated — manual trades use the same order-book fill engine as the bots</span>
+</footer>
+
+<script src="/auth-ui.js"></script>
+<script src="/markets.js"></script>
+</body>
+</html>
