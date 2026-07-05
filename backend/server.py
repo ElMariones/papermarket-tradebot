@@ -37,6 +37,16 @@ import engine
 import strategy
 from polymarket_client import fetch_active_markets_cached
 
+# "Ask the Bot" (backend/rag/): availability is decided ONCE here at boot —
+# rag/__init__.py probes the Apple-Silicon-only MLX stack. Everything beyond
+# the probe (numpy, the models) is only imported when the stack exists, so
+# this server runs untouched on Fly.io / non-Apple hardware.
+import rag as _rag
+if _rag.MLX_AVAILABLE:
+    from rag import ask as rag_ask
+else:
+    rag_ask = None
+
 # --- legacy access control ------------------------------------------------
 # Honored ONLY while no user accounts exist (one-release migration path).
 AUTH_USER = os.environ.get("TRADEBOT_AUTH_USER", "admin")
@@ -239,6 +249,15 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/reports":
                 limit = int(qs.get("limit", ["168"])[0])
                 return self._send_json(engine.get_hourly_reports(pf, limit))
+            if path == "/api/mlx-status":
+                if rag_ask:
+                    return self._send_json(rag_ask.status())
+                return self._send_json({
+                    "available": False, "model": None, "loaded": False,
+                    "reason": "Ask the Bot requires running locally on an "
+                              "Apple Silicon Mac with mlx-lm and "
+                              "sentence-transformers installed. This "
+                              "deployment doesn't support it."})
             if path == "/api/markets":
                 limit = max(1, min(300, int(qs.get("limit", ["100"])[0])))
                 return self._send_json(self._markets_list(limit))
@@ -275,6 +294,17 @@ class Handler(BaseHTTPRequestHandler):
 
             pf = engine.resolve_profile(body.get("profile"))
             user = self._current_user()
+
+            # "Ask the Bot" is read-only RAG over this portfolio's own log —
+            # open to every role including spectators, same as the read
+            # endpoints. It cannot mutate anything regardless of phrasing.
+            if path == "/api/ask":
+                if not rag_ask:
+                    return self._send_json(
+                        {"error": "Ask the Bot is not available on this "
+                                  "deployment (Apple Silicon only)."},
+                        status=503)
+                return self._send_json(rag_ask.ask(pf, body.get("question", "")))
 
             # Everything below changes portfolio state → ownership check.
             # Admin controls everything; a user only their own portfolio;

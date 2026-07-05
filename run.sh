@@ -4,7 +4,14 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-python3 -m pip install -q -r requirements.txt 2>/dev/null || true
+# "Ask the Bot" (local MLX chat) needs mlx-lm + sentence-transformers, which
+# live in an optional venv (see README). If that venv exists, run the server
+# with it so the feature is live; otherwise plain python3 — the dashboard
+# works identically, with the chat tab gracefully disabled.
+PYTHON="${TRADEBOT_PYTHON:-$HOME/.polymarket-paper/venv/bin/python3}"
+[ -x "$PYTHON" ] || PYTHON=python3
+
+"$PYTHON" -m pip install -q -r requirements.txt 2>/dev/null || true
 
 # Load local secrets/overrides if present (.env is gitignored — e.g. the
 # dashboard login TRADEBOT_AUTH_USER / TRADEBOT_AUTH_PASSWORD).
@@ -18,5 +25,5 @@ export PORT="${PORT:-8765}"
 # Local DB path (omit to use ~/.polymarket-paper/portfolio.db)
 # export TRADEBOT_DB_PATH="$PWD/portfolio.db"
 
-echo "Starting TradeBOT on http://127.0.0.1:${PORT} ..."
-exec python3 backend/server.py
+echo "Starting TradeBOT on http://127.0.0.1:${PORT} ($PYTHON) ..."
+exec "$PYTHON" backend/server.py

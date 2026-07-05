@@ -156,6 +156,23 @@ def _ensure_extra_schema():
             CREATE INDEX IF NOT EXISTS idx_hourly_pf_ts
                 ON hourly_reports(portfolio_name, ts);
 
+            -- "Ask the Bot" vector index: one embedded text blob per logged
+            -- decision/trade (see backend/rag/). Lives here so reset and the
+            -- admin claim treat it like every other name-keyed log table.
+            CREATE TABLE IF NOT EXISTS rag_chunks (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                portfolio_name TEXT NOT NULL,
+                source_type    TEXT NOT NULL,    -- 'decision' | 'trade'
+                source_id      INTEGER NOT NULL, -- id in the source table
+                source_ts      TEXT,
+                text           TEXT NOT NULL,
+                embedding      BLOB NOT NULL,    -- serialized float32 vector
+                created_at     TEXT NOT NULL,
+                UNIQUE(portfolio_name, source_type, source_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_rag_pf ON rag_chunks(portfolio_name);
+
             -- Accounts (auth.py owns the logic; the tables live here so every
             -- entrypoint that writes portfolios sees them — the portfolios
             -- owner_user_id FK below needs users to exist first).
@@ -425,7 +442,7 @@ def create_user_bots(username: str, user_id: int,
 # Tables keyed by portfolio NAME (portfolios itself is handled separately;
 # positions/trades/daily_snapshots key by portfolio_id and never need renames).
 _NAME_KEYED_TABLES = ("agent_settings", "agent_state", "equity_snapshots",
-                      "decisions", "hourly_reports")
+                      "decisions", "hourly_reports", "rag_chunks")
 
 
 def claim_legacy_bots(user_id: int, username: str) -> list[str]:
@@ -998,7 +1015,8 @@ def reset_all(name: str = "default", balance: float | None = None,
             qmarks = ",".join("?" * len(ids))
             for tbl in ("positions", "trades", "daily_snapshots"):
                 conn.execute(f"DELETE FROM {tbl} WHERE portfolio_id IN ({qmarks})", ids)
-        for tbl in ("equity_snapshots", "decisions", "hourly_reports", "agent_state"):
+        for tbl in ("equity_snapshots", "decisions", "hourly_reports",
+                    "agent_state", "rag_chunks"):
             conn.execute(f"DELETE FROM {tbl} WHERE portfolio_name = ?", (name,))
         conn.execute("UPDATE portfolios SET active = 0 WHERE name = ?", (name,))
         conn.commit()

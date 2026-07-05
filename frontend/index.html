@@ -151,6 +151,7 @@
           <button class="tab active" data-tab="trades">Trades</button>
           <button class="tab" data-tab="decisions">Reasoning</button>
           <button class="tab" data-tab="reports">Hourly log</button>
+          <button class="tab" data-tab="ask">Ask the Bot</button>
         </div>
         <div class="panel-tools">
           <button id="btnExportCsv" class="btn btn-mini" title="Download the current tab as a CSV spreadsheet">CSV</button>
@@ -187,6 +188,23 @@
           </tr></thead>
           <tbody></tbody>
         </table>
+      </div>
+      <!-- Ask the Bot: a fully local LLM (Apple MLX) answering questions
+           grounded ONLY in this bot's own reasoning log / trade history. -->
+      <div class="hidden" id="askPane">
+        <div id="chatLog" class="chat-log">
+          <div class="chat-empty" id="chatEmpty">Ask this bot about its own
+            trading — e.g. “why did you buy that World Cup market?” or “what
+            was your worst trade today?”. Answers come from a local model
+            reading only this bot's logged decisions, and cite the exact log
+            entries they're based on.</div>
+        </div>
+        <form id="chatForm" class="chat-form">
+          <input id="chatInput" type="text" maxlength="500" autocomplete="off"
+                 placeholder="Ask about this bot's trades and reasoning…" />
+          <button id="chatSend" class="btn btn-accent" type="submit">Ask</button>
+        </form>
+        <div id="chatDisabled" class="chat-disabled hidden"></div>
       </div>
     </section>
   </div>
